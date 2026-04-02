@@ -2,1218 +2,188 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>ESP32 Cocktail Dashboard</title>
+<title>Cocktail Machine Digital Twin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
 <style>
-  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background: linear-gradient(145deg, #e6f0ff, #ffffff); margin:0; padding:20px; color:#2c3e50;}
-  h1 {text-align:center;color:#1e3a8a;font-size:36px;font-weight:700;margin-bottom:30px;letter-spacing:1px;}
-  .grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:25px;max-width:1200px;margin:auto;}
-  .card {background:#fff;padding:25px;border-radius:20px;box-shadow:0 8px 20px rgba(0,0,0,0.08);transition: transform 0.2s, box-shadow 0.2s;}
-  .card:hover {transform: translateY(-5px);box-shadow:0 12px 25px rgba(0,0,0,0.12);}
-  .card h2 {margin-top:0;font-size:24px;color:#1e3a8a;margin-bottom:15px;font-weight:700;}
-  canvas {width:100% !important;height:280px !important;margin-top:10px;}
-  .current-value {font-size:22px;font-weight:600;margin-bottom:15px;}
-  .pump-card {max-width:1200px;margin:30px auto 0 auto;}
-  .status {font-weight:700;font-size:20px;}
-  .status.running { color: #16a34a; }
-  .status.off { color: #ef4444; }
-  .temp-boxes {display:flex;flex-wrap:wrap;gap:12px;margin-bottom:15px;}
-  .temp-box {background:#f3f6fb;padding:10px 15px;border-radius:15px;font-weight:600;font-size:17px;min-width:110px;text-align:center;box-shadow:0 2px 5px rgba(0,0,0,0.05);transition: background 0.2s; cursor:pointer;}
-  .temp-box:hover {background:#e0ebff; transform:translateY(-2px);}
-  .tq-full {grid-column: 1 / -1;}
-  .tq-info {display:flex;gap:32px;flex-wrap:wrap;margin-top:12px;padding:10px 14px;background:#f3f6fb;border-radius:12px;font-size:16px;font-weight:600;}
-  .tq-info span {color:#2c3e50;}
-  .tq-info .pinch {color:#dc2626;}
-  @media (max-width:600px){.temp-boxes{flex-direction:column;}}
+  /* --- GLOBAL STYLES (From your webpage.h) --- */
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f0f4f8; margin:0; padding:20px; color:#2c3e50; }
+  h1 { text-align:center; color:#1e3a8a; margin-bottom:10px; }
+  .nav { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
+  .nav-btn { padding: 10px 20px; border-radius: 8px; border: none; background: #1e3a8a; color: white; cursor: pointer; font-weight: bold; }
+  .nav-btn:hover { background: #3b82f6; }
+  .badge { display:inline-block; padding:6px 16px; border-radius:50px; font-weight:bold; font-size:13px; margin-bottom: 15px;}
+  .online { background:#dcfce7; color:#166534; }
+  .demo { background:#fef9c3; color:#854d0e; border: 1px solid #facc15; }
+  
+  /* --- LAYOUT --- */
+  .page { display: none; max-width: 1200px; margin: auto; }
+  .active-page { display: block; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px; }
+  .card { background:#fff; padding:20px; border-radius:15px; box-shadow:0 4px 12px rgba(0,0,0,0.1); }
+  
+  /* --- PFD SVG STYLING --- */
+  .pfd-svg { background: white; border-radius: 15px; padding: 20px; width: 100%; box-sizing: border-box; border: 1px solid #e2e8f0; }
+  .pipe { stroke: #cbd5e1; stroke-width: 8; fill: none; }
+  .sensor-circle { fill: white; stroke: #1e3a8a; stroke-width: 2; }
+  .val-text { font-weight: bold; font-family: monospace; font-size: 14px; fill: #1e3a8a; }
 </style>
 </head>
-
 <body>
-<h1>ESP32 Cocktail Dashboard</h1>
 
-<div class="grid">
-  <div class="card">
-    <h2>Weight Monitoring</h2>
-    <div class="current-value">Current Weight: <span id="weightValue">0</span> g</div>
-    <canvas id="weightChart"></canvas>
+  <div style="text-align: center;">
+    <div id="conn-status" class="badge demo">Initializing...</div>
   </div>
 
-  <div class="card">
-    <h2>HEX Performance</h2>
-    <div class="current-value" style="display:flex;gap:24px;flex-wrap:wrap;">
-      <span>LMTD: <b id="lmtdValue">–</b> &deg;C</span>
-      <span>U: <b id="uValue">–</b> W/(m&sup2;&middot;K)</span>
-    </div>
-    <canvas id="hexChart"></canvas>
+  <h1>Cocktail Process Digital Twin</h1>
+
+  <div class="nav">
+    <button class="nav-btn" onclick="showPage('dashboard')">Dashboard</button>
+    <button class="nav-btn" onclick="showPage('pfd')">PFD Diagram</button>
+    <button class="nav-btn" onclick="showPage('analysis')">Thermodynamics</button>
   </div>
 
-  <div class="card tq-full">
-    <h2>Thermodynamic T-Q Profile</h2>
-    <canvas id="tqChart"></canvas>
-    <div class="tq-info">
-      <span>Q<sub>total</sub>: <b id="tqQvalue">—</b> W</span>
-      <span>&Delta;T<sub>left</sub>: <b id="tqDtLeft">—</b> &deg;C</span>
-      <span>&Delta;T<sub>right</sub>: <b id="tqDtRight">—</b> &deg;C</span>
-      <span class="pinch">&Delta;T<sub>min</sub> (Pinch): <b id="tqDtMin">—</b> &deg;C</span>
+  <div id="dashboard" class="page active-page">
+    <div class="grid">
+      <div class="card">
+        <h2>Live Weight</h2>
+        <canvas id="weightChart"></canvas>
+      </div>
+      <div class="card">
+        <h2>System Flow</h2>
+        <canvas id="flowChart"></canvas>
+      </div>
     </div>
   </div>
-</div>
 
-<div class="card pump-card">
-  <h2>System Status</h2>
-  <p>Juice Pump (P-102): <span id="pump1Status" class="status off">OFF</span></p>
-  <p>Alcohol Pump (P-201): <span id="pump2Status" class="status off">OFF</span></p>
-  <p>Recycle Pump (P-101): <span id="recycleStatus" class="status off">OFF</span></p>
-  <p>Heater: <span id="heaterStatus" class="status off">OFF</span></p>
-  <p>Juice Pump Speed: <span id="juicePWM">0</span>%</p>
-  <p><a href="/pfd" style="color:#1e3a8a;font-weight:700;">View Live PFD &rarr;</a></p>
-  <p><a href="/reset-wifi" style="color:#ef4444;font-weight:700;" onclick="return confirm('This will erase saved WiFi credentials and restart the machine. Are you sure?')">Change WiFi network &rarr;</a></p>
-</div>
+  <div id="pfd" class="page">
+    <div class="card">
+      <h2>Process Flow Diagram</h2>
+      <svg class="pfd-svg" viewBox="0 0 800 400">
+        <path class="pipe" d="M50 200 H200 M300 200 H500 M600 200 H750" />
+        <rect x="200" y="150" width="100" height="100" rx="10" fill="#3b82f6" fill-opacity="0.1" stroke="#3b82f6" />
+        <text x="250" y="205" text-anchor="middle">Heat Exchanger</text>
+        
+        <circle class="sensor-circle" cx="125" cy="200" r="22" />
+        <text x="125" y="205" text-anchor="middle" id="pfd-ti101" class="val-text">--</text>
+        <text x="125" y="170" text-anchor="middle" font-size="12">TI-101</text>
 
+        <rect x="650" y="170" width="60" height="60" fill="none" stroke="#1e3a8a" />
+        <text x="680" y="205" text-anchor="middle" id="pfd-weight" class="val-text">--</text>
+        <text x="680" y="160" text-anchor="middle" font-size="12">Weight (g)</text>
+      </svg>
+    </div>
+  </div>
 
+  <div id="analysis" class="page">
+    <div class="grid">
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>T-Q Diagram (Pinch Analysis)</h2>
+        <canvas id="tqChart" style="height: 400px;"></canvas>
+      </div>
+      <div class="card">
+        <h2>Heat Transfer (U-Factor)</h2>
+        <canvas id="uChart"></canvas>
+      </div>
+    </div>
+  </div>
 
-<script>
-  const weightCtx = document.getElementById('weightChart').getContext('2d');
-  const hexCtx    = document.getElementById('hexChart').getContext('2d');
-  const tqCtx     = document.getElementById('tqChart').getContext('2d');
+  <script>
+    const MAX = 30;
+    let labels = [];
+    let charts = {};
 
-  const weightChart = new Chart(weightCtx,{type:'line',data:{labels:[],datasets:[{label:'Weight (g)',data:[],borderColor:'#1e3a8a',backgroundColor:'rgba(30,58,138,0.1)',borderWidth:2,fill:true,tension:0.3}]},options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{ticks:{maxTicksLimit:6}},y:{title:{display:true,text:'Grams'},suggestedMin:0,suggestedMax:350}}}});
-
-  const hexChart = new Chart(hexCtx, {
-    type: 'line',
-    data: {
-      labels: [],
-      datasets: [
-        {label:'LMTD (°C)',   data:[], borderColor:'#f97316', backgroundColor:'rgba(249,115,22,0.08)',  borderWidth:2, tension:0.3, yAxisID:'yL'},
-        {label:'U (W/m²·K)', data:[], borderColor:'#8b5cf6', backgroundColor:'rgba(139,92,246,0.08)', borderWidth:2, tension:0.3, yAxisID:'yU'}
-      ]
-    },
-    options: {
-      responsive:true, maintainAspectRatio:false, animation:false,
-      plugins:{legend:{display:true,position:'top',align:'end',labels:{usePointStyle:true,padding:10,boxWidth:12}}},
-      scales:{
-        x:{ticks:{maxTicksLimit:6}},
-        yL:{type:'linear',position:'left', title:{display:true,text:'LMTD (°C)'},    suggestedMin:0, suggestedMax:20},
-        yU:{type:'linear',position:'right',title:{display:true,text:'U (W/m²·K)'}, suggestedMin:0, suggestedMax:2000, grid:{drawOnChartArea:false}}
-      }
+    // --- Navigation ---
+    function showPage(id) {
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active-page'));
+      document.getElementById(id).classList.add('active-page');
     }
-  });
 
-  // ── T-Q Thermodynamic Diagram ─────────────────────────────────────────────────
-  // Scatter chart with showLine = true gives a proper linear-x axis (no category axis).
-  // Two data-points per stream define the straight line for a pure HEX (no phase change).
-  const tqChart = new Chart(tqCtx, {
-    type: 'scatter',
-    data: {
-      datasets: [
-        {
-          label: 'Hot Stream (chiller water)',
-          data: [],
-          borderColor: '#ef4444',
-          backgroundColor: 'rgba(239,68,68,0.15)',
-          borderWidth: 2.5,
-          showLine: true,
-          pointRadius: 5,
-          pointHoverRadius: 7,
-          tension: 0,
-          fill: false
-        },
-        {
-          label: 'Cold Stream (orange juice)',
-          data: [],
-          borderColor: '#3b82f6',
-          backgroundColor: 'rgba(59,130,246,0.15)',
-          borderWidth: 2.5,
-          showLine: true,
-          pointRadius: 5,
-          pointHoverRadius: 7,
-          tension: 0,
-          fill: false
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      plugins: {
-        legend: {display:true, position:'top', align:'end', labels:{usePointStyle:true, padding:12, boxWidth:12}},
-        tooltip: {
-          callbacks: {
-            label: ctx => ' Q=' + ctx.parsed.x.toFixed(0) + ' W   T=' + ctx.parsed.y.toFixed(2) + ' °C'
-          }
-        }
-      },
-      scales: {
-        x: {
-          type: 'linear',
-          title: {display:true, text:'Cumulative Heat Duty (W)', font:{size:13}},
-          suggestedMin: 0,
-          ticks: {maxTicksLimit: 6}
-        },
-        y: {
-          type: 'linear',
-          title: {display:true, text:'Temperature (°C)', font:{size:13}}
-        }
-      }
-    }
-  });
+    // --- Chart Initializations ---
+    function initCharts() {
+      const cfg = { type: 'line', data: { labels: [], datasets: [] }, options: { responsive: true, maintainAspectRatio: false, animation: false }};
 
-  function fetchData(){
-    fetch('/data')
-      .then(r=>r.json())
-      .then(data=>{
-        try {
-          const t=new Date().toLocaleTimeString();
+      charts.weight = new Chart(document.getElementById('weightChart'), {...cfg});
+      charts.weight.data.datasets.push({ label: 'Weight (g)', data: [], borderColor: '#3b82f6' });
 
-          // ---- Weight chart ----
-          weightChart.data.labels.push(t);
-          weightChart.data.datasets[0].data.push(data.weight);
-          if(weightChart.data.labels.length>300){weightChart.data.labels.shift();weightChart.data.datasets[0].data.shift();}
-          weightChart.update();
-          document.getElementById('weightValue').innerText=data.weight;
+      charts.flow = new Chart(document.getElementById('flowChart'), {...cfg});
+      charts.flow.data.datasets.push({ label: 'Flow (L/min)', data: [], borderColor: '#10b981' });
 
-          // ---- HEX performance chart (LMTD + U) ----
-          if(data.lmtd !== undefined && data.u_overall !== undefined){
-            hexChart.data.labels.push(t);
-            hexChart.data.datasets[0].data.push(data.lmtd);
-            hexChart.data.datasets[1].data.push(data.u_overall);
-            if(hexChart.data.labels.length>300){
-              hexChart.data.labels.shift();
-              hexChart.data.datasets[0].data.shift();
-              hexChart.data.datasets[1].data.shift();
-            }
-            hexChart.update();
-            document.getElementById('lmtdValue').innerText = data.lmtd.toFixed(2);
-            document.getElementById('uValue').innerText    = data.u_overall.toFixed(0);
-          }
+      charts.u = new Chart(document.getElementById('uChart'), {...cfg});
+      charts.u.data.datasets.push({ label: 'U-Factor', data: [], borderColor: '#8b5cf6' });
 
-          // ---- T-Q Thermodynamic Diagram ----
-          // Variable mapping (actual /data JSON names):
-          //   ti100  = TI-100  hot-side HEX inlet  (chiller in)
-          //   tt101  = TT-101  hot-side HEX outlet (chiller out)
-          //   ti102  = TI-102  cold-side HEX inlet (OJ in)
-          //   ti103  = TI-103  cold-side HEX outlet(OJ out)
-          //   ft101  = FT-101  chiller flow [L/min]
-          (function(){
-            const thIn  = data.ti100;  // T_h,in
-            const thOut = data.tt101;  // T_h,out
-            const tcIn  = data.ti102;  // T_c,in
-            const tcOut = data.ti103;  // T_c,out
-            const fHot  = data.ft101;  // hot-side flow [L/min]
-            const CP    = 4180;        // J/(kg·K) — water / chiller fluid
-            const RHO   = 1.0;        // kg/L
-            // Guard: need valid temperatures and positive flow
-            const valid = fHot > 0
-              && thIn  != null && isFinite(thIn)
-              && thOut != null && isFinite(thOut)
-              && tcIn  != null && isFinite(tcIn)
-              && tcOut != null && isFinite(tcOut);
-            if (valid) {
-              const qTotal = (fHot / 60) * RHO * CP * Math.abs(thIn - thOut);
-              // Hot stream: enters at Q=0 (high T), exits at Q=Q_total (low T)
-              tqChart.data.datasets[0].data = [{x:0, y:thIn}, {x:qTotal, y:thOut}];
-              // Cold stream (counter-current): cold-out aligns with hot-in end (Q=0)
-              tqChart.data.datasets[1].data = [{x:0, y:tcOut}, {x:qTotal, y:tcIn}];
-              tqChart.update();
-              // Pinch-point ΔT at each end
-              const dtLeft  = Math.abs(thIn  - tcOut);
-              const dtRight = Math.abs(thOut - tcIn);
-              const dtMin   = Math.min(dtLeft, dtRight);
-              document.getElementById('tqQvalue').innerText  = qTotal.toFixed(0);
-              document.getElementById('tqDtLeft').innerText  = dtLeft.toFixed(2);
-              document.getElementById('tqDtRight').innerText = dtRight.toFixed(2);
-              document.getElementById('tqDtMin').innerText   = dtMin.toFixed(2);
-            } else {
-              document.getElementById('tqQvalue').innerText  = '—';
-              document.getElementById('tqDtLeft').innerText  = '—';
-              document.getElementById('tqDtRight').innerText = '—';
-              document.getElementById('tqDtMin').innerText   = '—';
-            }
-          })();
-
-          // ---- Pump status ----
-          const pump1El=document.getElementById('pump1Status');
-          const pump2El=document.getElementById('pump2Status');
-          if(data.pump1){pump1El.innerText="RUNNING";pump1El.className="status running";}
-          else{pump1El.innerText="OFF";pump1El.className="status off";}
-          if(data.pump2){pump2El.innerText="RUNNING";pump2El.className="status running";}
-          else{pump2El.innerText="OFF";pump2El.className="status off";}
-
-          const recycleEl=document.getElementById('recycleStatus');
-          const heaterEl=document.getElementById('heaterStatus');
-          const juicePWMEl=document.getElementById('juicePWM');
-          if(data.recyclePump){recycleEl.innerText="RUNNING";recycleEl.className="status running";}
-          else{recycleEl.innerText="OFF";recycleEl.className="status off";}
-          if(data.heater){heaterEl.innerText="ON";heaterEl.className="status running";}
-          else{heaterEl.innerText="OFF";heaterEl.className="status off";}
-          juicePWMEl.innerText=data.juicePWM;
-
-        } catch(e) { console.warn('fetchData update error:', e); }
-      })
-      .catch(e=>console.warn('fetchData network error:',e));
-  }
-
-  // Stub so no ReferenceError if called (real version lives in pfd_page)
-  function updatePumpCtrlDots(d) {}
-
-  setInterval(fetchData,1000);
-  fetchData();
-
-  // ── Pre-populate charts with 5 minutes of history on page load ─────────────
-  // Fetched once; never polled. Oldest sample first.
-  // Keys match the /history JSON: ti102 ti103 ti100 tt101 tt200 ft101 ft100 weight
-  (async () => {
-    try {
-      const h = await fetch('/history').then(r => r.json());
-      if (!h || h.n === 0) return;
-      const n = h.n;
-      // Build relative time labels: "-4:59" … "0:00"
-      const labels = Array.from({length: n}, (_, i) => {
-        const s = n - 1 - i;
-        return '-' + Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+      charts.tq = new Chart(document.getElementById('tqChart'), {
+        type: 'scatter',
+        data: { datasets: [
+          { label: 'Hot Stream', data: [], borderColor: '#ef4444', showLine: true },
+          { label: 'Cold Stream', data: [], borderColor: '#3b82f6', showLine: true }
+        ]},
+        options: { responsive: true, maintainAspectRatio: false }
       });
-      // Weight chart
-      weightChart.data.labels   = labels;
-      weightChart.data.datasets[0].data = h.weight;
-      weightChart.update();
-      // HEX performance chart — compute LMTD and U from history arrays
-      const lmtdArr = [], uArr = [];
-      for (let i = 0; i < n; i++) {
-        const dT1 = h.ti100[i] - h.ti103[i];  // hot-in minus cold-out
-        const dT2 = h.tt101[i] - h.ti102[i];  // hot-out minus cold-in
-        let lmtd = 0, u = 0;
-        if (dT1 > 0 && dT2 > 0) {
-          lmtd = Math.abs(dT1 - dT2) < 0.01 ? dT1 : (dT1 - dT2) / Math.log(dT1 / dT2);
-          const cpHot = 3770, rho = 1000, HEX_AREA = 0.12;
-          const qHot  = h.ft101[i] / 60000 * rho * cpHot * (h.ti100[i] - h.tt101[i]);
-          const qCold = h.ft100[i] / 60000 * rho * 4186  * (h.ti103[i] - h.ti102[i]);
-          const qAvg  = (Math.abs(qHot) + Math.abs(qCold)) / 2;
-          u = lmtd > 0.1 ? qAvg / (HEX_AREA * lmtd) : 0;
-        }
-        lmtdArr.push(lmtd);
-        uArr.push(u);
+    }
+
+    // --- Simulation Engine ---
+    function getMockData() {
+      const time = Date.now() / 1000;
+      return {
+        ti101: 75 + Math.sin(time/5),
+        ti102: 42 + Math.random(),
+        ti201: 15 + Math.random(),
+        ti202: 28 + Math.random(),
+        weight: 200 + (Math.random() * 5),
+        flow100: 0.85 + Math.sin(time/10) * 0.05,
+        u_overall: 1100 + Math.random() * 50,
+        lmtd: 14.2
+      };
+    }
+
+    // --- Fetch & Update Loop ---
+    async function update() {
+      let d;
+      const status = document.getElementById('conn-status');
+      
+      try {
+        const res = await fetch('/data');
+        d = await res.json();
+        status.innerText = "● LIVE: CONNECTED TO ESP32";
+        status.className = "badge online";
+      } catch (e) {
+        d = getMockData();
+        status.innerText = "● SIMULATION MODE (OFFLINE)";
+        status.className = "badge demo";
       }
-      hexChart.data.labels = labels;
-      hexChart.data.datasets[0].data = lmtdArr;
-      hexChart.data.datasets[1].data = uArr;
-      hexChart.update();
-    } catch(e) { console.warn('History load error:', e); }
-  })();
 
+      const t = new Date().toLocaleTimeString();
+      labels.push(t);
+      if (labels.length > MAX) labels.shift();
 
-</script>
-</body>
-</html>
+      // Update Text/SVG
+      document.getElementById('pfd-ti101').textContent = d.ti101.toFixed(1);
+      document.getElementById('pfd-weight').textContent = Math.round(d.weight);
 
+      // Update Charts
+      updateChart(charts.weight, d.weight);
+      updateChart(charts.flow, d.flow100);
+      updateChart(charts.u, d.u_overall);
 
+      // T-Q Update
+      const Q = (d.flow100/60) * 4180 * Math.abs(d.ti101 - d.ti102);
+      charts.tq.data.datasets[0].data = [{x:0, y:d.ti101}, {x:Q, y:d.ti102}];
+      charts.tq.data.datasets[1].data = [{x:0, y:d.ti202}, {x:Q, y:d.ti201}];
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>DS18B20 Info</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background:#f0f4f8; margin:0; padding:20px; color:#1e3a8a; }
-  .card { background:#fff; padding:20px; border-radius:20px; box-shadow:0 8px 20px rgba(0,0,0,0.08); max-width:600px; margin:auto; }
-  h1 {text-align:center; margin-bottom:20px;}
-  img { display:block; max-width:100%; margin:auto; border-radius:15px; }
-  p { font-size:18px; line-height:1.6; margin-top:20px; text-align:justify; }
-  a { display:block; text-align:center; margin-top:25px; font-weight:700; color:#3b82f6; text-decoration:none; }
-  a:hover { text-decoration:underline; }
-</style>
-</head>
-<body>
-  <div class="card">
-    <h1>DS18B20 Temperature Sensor</h1>
-    <img src="/ds18b20.jpg" alt="DS18B20 Sensor">
-    <p>The DS18B20 is a digital temperature sensor that provides accurate readings with a 1-Wire interface. It can measure temperatures from -55&deg;C to +125&deg;C with &plusmn;0.5&deg;C accuracy. It is widely used in electronics projects for monitoring environmental or device temperatures.</p>
-    <a href="/">Back to Dashboard</a>
-  </div>
-</body>
-</html>
-
-
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>HX711 Weight Scale Info</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background:#f0f4f8; margin:0; padding:20px; color:#1e3a8a; }
-  .card { background:#fff; padding:20px; border-radius:20px; box-shadow:0 8px 20px rgba(0,0,0,0.08); max-width:600px; margin:auto; }
-  h1 {text-align:center; margin-bottom:20px;}
-  img { display:block; max-width:100%; margin:auto; border-radius:15px; }
-  p { font-size:18px; line-height:1.6; margin-top:20px; text-align:justify; }
-  a { display:block; text-align:center; margin-top:25px; font-weight:700; color:#3b82f6; text-decoration:none; }
-  a:hover { text-decoration:underline; }
-</style>
-</head>
-<body>
-  <div class="card">
-    <h1>HX711 Load Cell Amplifier</h1>
-    <img src="/hx.jpg" alt="HX711 Module">
-    <p>The HX711 is a precision 24-bit analog-to-digital converter designed for weigh scales and industrial control applications. It interfaces directly with a bridge sensor such as a load cell to provide accurate weight measurements for the cocktail dispensing system.</p>
-    <a href="/">Back to Dashboard</a>
-  </div>
-</body>
-</html>
-
-
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Cocktail Machine – Live PFD</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    background: linear-gradient(145deg, #e6f0ff, #ffffff);
-    color: #2c3e50;
-    padding: 20px;
-  }
-
-  h1 {
-    text-align: center;
-    color: #1e3a8a;
-    font-size: 28px;
-    font-weight: 700;
-    margin-bottom: 6px;
-    letter-spacing: 1px;
-  }
-
-  .subtitle {
-    text-align: center;
-    color: #64748b;
-    font-size: 13px;
-    margin-bottom: 20px;
-  }
-
-  /* ── Status bar ─────────────────────────────────────────── */
-  .status-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    justify-content: center;
-    margin-bottom: 20px;
-  }
-
-  .status-pill {
-    background: #fff;
-    border-radius: 50px;
-    padding: 6px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .dot {
-    width: 10px; height: 10px;
-    border-radius: 50%;
-    display: inline-block;
-  }
-
-  .dot-on  { background: #16a34a; box-shadow: 0 0 6px #16a34a; }
-  .dot-off { background: #ef4444; }
-
-  /* ── PFD wrapper ─────────────────────────────────────────── */
-  .pfd-card {
-    background: #fff;
-    border-radius: 20px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.09);
-    padding: 20px;
-    overflow: auto;
-    position: relative;
-  }
-
-  .pfd-wrap {
-    position: relative;
-    width: 1126px;    /* native SVG width */
-    height: 923px;    /* native SVG height */
-    margin: 0 auto;
-  }
-
-  /* scale the whole thing to fit on screen */
-  .pfd-scaler {
-    transform-origin: top left;
-    /* JS sets the scale dynamically */
-  }
-
-  /* SVG sits at the back */
-  .pfd-wrap svg {
-    position: absolute;
-    top: 0; left: 0;
-    width: 100%;
-    height: 100%;
-  }
-
-  /* ── Overlay badges ──────────────────────────────────────── */
-  /*
-     Each badge is absolutely positioned in SVG-coordinate space
-     (i.e. the same coordinate system as the SVG's viewBox).
-     We place them centred on the corresponding instrument circle.
-  */
-  .overlay {
-    position: absolute;
-    pointer-events: none;    /* default: pass through to SVG */
-  }
-
-  /* Badges that link to the chart page are clickable */
-  .badge-link {
-    pointer-events: auto;
-    cursor: pointer;
-    text-decoration: none;
-  }
-  .badge-link:hover {
-    filter: brightness(1.25);
-    transform: translate(-50%, -50%) scale(1.10);
-  }
-
-  /* Temperature / flow reading badge */
-  .badge {
-    background: #1e3a8a;
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    border-radius: 20px;
-    padding: 2px 7px;
-    white-space: nowrap;
-    transform: translate(-50%, -50%);
-    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-    border: 1.5px solid #fff;
-  }
-
-  /* Pump indicator dot */
-  .pump-dot {
-    width: 14px; height: 14px;
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
-    border: 2px solid #fff;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-    transition: background 0.4s;
-  }
-
-  .pump-dot.running { background: #16a34a; box-shadow: 0 0 8px #16a34a, 0 1px 4px rgba(0,0,0,0.3); }
-  .pump-dot.off     { background: #ef4444; }
-
-  /* Weight badge */
-  .badge-weight {
-    background: #7c3aed;
-    font-size: 11px;
-    padding: 3px 9px;
-  }
-
-  /* Flow badge */
-  .badge-flow {
-    background: #0891b2;
-    font-size: 11px;
-    padding: 3px 9px;
-  }
-
-  /* Heater badge */
-  .badge-heater {
-    background: #dc2626;
-  }
-
-  /* Legend */
-  .legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    justify-content: center;
-    margin-top: 14px;
-    font-size: 12px;
-    color: #475569;
-  }
-
-  .legend-item { display: flex; align-items: center; gap: 5px; }
-  .leg-dot { width: 10px; height: 10px; border-radius: 50%; }
-
-  /* Responsive scaler wrapper */
-  .scaler-container {
-    overflow: hidden;
-  }
-
-  /* ── Pump control panel ──────────────────────────────────────── */
-  .pump-ctrl-card {
-    background: #fff;
-    border-radius: 20px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.09);
-    padding: 20px 25px;
-    margin-top: 25px;
-  }
-  .pump-ctrl-card h2 { margin-top:0; font-size:20px; color:#1e3a8a; font-weight:700; margin-bottom:14px; }
-  .pump-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid #f1f5f9;flex-wrap:wrap;}
-  .pump-row:last-child{border-bottom:none;}
-  .pump-tag{background:#1e3a8a;color:#fff;font-weight:700;font-size:11px;border-radius:8px;padding:3px 9px;min-width:58px;text-align:center;white-space:nowrap;}
-  .pump-desc{font-size:12px;color:#475569;min-width:120px;}
-  .pump-slider{flex:1;min-width:120px;max-width:260px;accent-color:#1e3a8a;height:6px;cursor:pointer;}
-  .pump-speed-val{font-size:12px;font-weight:700;color:#1e3a8a;min-width:32px;text-align:right;}
-  .pump-btn{border:none;border-radius:10px;padding:7px 16px;font-weight:700;font-size:12px;cursor:pointer;transition:background 0.2s,transform 0.1s;min-width:72px;}
-  .pump-btn:active{transform:scale(0.96);}
-  .pump-btn.state-off{background:#f1f5f9;color:#475569;}
-  .pump-btn.state-on{background:#16a34a;color:#fff;}
-  .pump-status-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0;transition:background 0.4s;}
-  .pump-status-dot.running{background:#16a34a;box-shadow:0 0 6px #16a34a;}
-  .pump-status-dot.off{background:#ef4444;}
-</style>
-</head>
-<body>
-
-<h1>🍹 Cocktail Machine – Live PFD</h1>
-<p class="subtitle">Process Flow Diagram with live sensor data · updates every second</p>
-
-<!-- ── Quick-status pills ─────────────────────────────────── -->
-<div class="status-bar">
-  <div class="status-pill">⚖️ V-500: <span id="sb-weight">–</span> g</div>
-  <div class="status-pill"><span class="dot" id="dot-pump1"></span> P-102 Juice</div>
-  <div class="status-pill"><span class="dot" id="dot-pump2"></span> P-202 Alcohol</div>
-  <div class="status-pill"><span class="dot" id="dot-recycle"></span> P-101 Recycle</div>
-  <div class="status-pill"><span class="dot" id="dot-heater"></span> Heater</div>
-  <div class="status-pill"><span class="dot" id="dot-stirrer"></span> Stirrer R-200</div>
-  <div class="status-pill">H-100: <span id="sb-servo">-</span>°</div>
-  <div class="status-pill">🌡️ Cold In: <span id="sb-t0">–</span> °C</div>
-  <div class="status-pill">🌡️ Cold Out: <span id="sb-t1">–</span> °C</div>
-  <div class="status-pill">🌡️ Hot In: <span id="sb-t2">–</span> °C</div>
-  <div class="status-pill">🌡️ Hot Out: <span id="sb-t3">–</span> °C</div>
-  <div class="status-pill">Q₁ OJ: <span id="sb-q-cold">-</span> W</div>
-  <div class="status-pill">Q₂ Chiller: <span id="sb-q-hot">-</span> W</div>
-</div>
-
-<!-- ── PFD card ───────────────────────────────────────────── -->
-<div class="pfd-card">
-  <div class="scaler-container" id="scalerContainer">
-    <div class="pfd-scaler" id="pfdScaler">
-      <div class="pfd-wrap" id="pfdWrap">
-
-        <!-- ═══════════════════════════════════════════════════
-             EMBEDDED SVG  (from PFD_cocktailmachine_drawio.svg)
-             ═══════════════════════════════════════════════════ -->
-        <!-- NOTE FOR DEPLOYMENT:
-             Paste your full SVG content here.
-             The outer <div id="pfdWrap"> is 1126×923 px
-             matching the SVG viewBox.
-             In production, put the raw SVG inline below:        -->
-        <svg xmlns="http://www.w3.org/2000/svg" style="background: #ffffff; background-color: light-dark(#ffffff, var(--ge-dark-color, #121212)); color-scheme: light dark;" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="1142px" height="895px" viewBox="0 0 1142 895" content="&lt;mxfile host=&quot;app.diagrams.net&quot; agent=&quot;Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36&quot; version=&quot;29.6.1&quot; scale=&quot;1&quot; border=&quot;0&quot;&gt;&#10;  &lt;diagram name=&quot;Pagina-1&quot; id=&quot;VqkrQU8M-jM9YE_reF30&quot;&gt;&#10;    &lt;mxGraphModel dx=&quot;1257&quot; dy=&quot;1489&quot; grid=&quot;0&quot; gridSize=&quot;1&quot; guides=&quot;1&quot; tooltips=&quot;1&quot; connect=&quot;1&quot; arrows=&quot;1&quot; fold=&quot;1&quot; page=&quot;1&quot; pageScale=&quot;1&quot; pageWidth=&quot;1169&quot; pageHeight=&quot;827&quot; background=&quot;none&quot; math=&quot;0&quot; shadow=&quot;0&quot;&gt;&#10;      &lt;root&gt;&#10;        &lt;mxCell id=&quot;0&quot; /&gt;&#10;        &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot; /&gt;&#10;        &lt;mxCell id=&quot;vXL_AHSKHcyXGbASRHFB-2&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.heat_exchangers.plate_and_frame_heat_exchanger;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;120&quot; width=&quot;100&quot; x=&quot;405&quot; y=&quot;189&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;vXL_AHSKHcyXGbASRHFB-6&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.vessels.bunker_(conical_bottom);html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;100&quot; width=&quot;100&quot; x=&quot;989&quot; y=&quot;389&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--15&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--1&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;startArrow=none;startFill=0;endArrow=none;endFill=0;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;355&quot; y=&quot;196&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--1&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;TI&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;100&amp;lt;br&amp;gt;&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;335&quot; y=&quot;135&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--57&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--2&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;114.78567504882824&quot; y=&quot;600.5&quot; as=&quot;sourcePoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--2&quot; parent=&quot;1&quot; style=&quot;verticalLabelPosition=bottom;outlineConnect=0;align=center;dashed=0;html=1;verticalAlign=top;shape=mxgraph.pid2misc.column;columnType=common&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;263&quot; width=&quot;63&quot; x=&quot;154&quot; y=&quot;469&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--3&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.vessels.tank_(covered);html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;112&quot; width=&quot;156&quot; x=&quot;679&quot; y=&quot;-24&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--4&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;W-100&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;423&quot; y=&quot;310&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--6&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;TI&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;103&amp;lt;br&amp;gt;&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;531&quot; y=&quot;145&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--7&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;TI&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;102&amp;lt;br&amp;gt;&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;431&quot; y=&quot;370&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--8&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;TT&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;101&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;536&quot; y=&quot;300&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--10&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.vessels.tank_(false_bottom);html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;135&quot; width=&quot;50&quot; x=&quot;53&quot; y=&quot;175&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--11&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;vXL_AHSKHcyXGbASRHFB-5&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.06;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;vXL_AHSKHcyXGbASRHFB-2&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;302&quot; y=&quot;142&quot; /&gt;&#10;              &lt;mxPoint x=&quot;302&quot; y=&quot;196&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--13&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;vXL_AHSKHcyXGbASRHFB-2&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.94;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.517;entryY=-0.001;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--10&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;527&quot; y=&quot;302&quot; /&gt;&#10;              &lt;mxPoint x=&quot;527&quot; y=&quot;342&quot; /&gt;&#10;              &lt;mxPoint x=&quot;153&quot; y=&quot;340&quot; /&gt;&#10;              &lt;mxPoint x=&quot;151&quot; y=&quot;125&quot; /&gt;&#10;              &lt;mxPoint x=&quot;80&quot; y=&quot;125&quot; /&gt;&#10;            &lt;/Array&gt;&#10;            &lt;mxPoint x=&quot;80&quot; y=&quot;168&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--16&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;V-100&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;48&quot; y=&quot;310&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--18&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;Glycol chiller&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;732&quot; y=&quot;88&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--19&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;vXL_AHSKHcyXGbASRHFB-2&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.06;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.045;entryY=0.266;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--3&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;598&quot; y=&quot;196&quot; /&gt;&#10;              &lt;mxPoint x=&quot;598&quot; y=&quot;6&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--20&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;startArrow=none;startFill=0;endArrow=none;endFill=0;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;550.8&quot; y=&quot;185&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;550.8&quot; y=&quot;196&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--23&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;startArrow=none;startFill=0;endArrow=none;endFill=0;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;450.81999999999994&quot; y=&quot;359&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;450.81999999999994&quot; y=&quot;370&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--25&quot; parent=&quot;1&quot; style=&quot;verticalLabelPosition=bottom;align=center;html=1;verticalAlign=top;pointerEvents=1;dashed=0;shape=mxgraph.pid2valves.valve;valveType=gate;actuator=powered;flipH=1;legacyAnchorPoints=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;60&quot; width=&quot;70&quot; x=&quot;771&quot; y=&quot;317&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--26&quot; parent=&quot;ICTHCTXNF9rGMgBAgNH--25&quot; style=&quot;part=1;strokeColor=none;fillColor=none;fontStyle=1;fontSize=14;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;21&quot; width=&quot;24.5&quot; x=&quot;22.75&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--27&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.vessels.tank_(false_bottom);html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;135&quot; width=&quot;50&quot; x=&quot;414&quot; y=&quot;588.5&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--28&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;V-200&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;409&quot; y=&quot;723.5&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--29&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--28&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--28&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;vXL_AHSKHcyXGbASRHFB-5&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.pumps_-_din.hydraulic;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;rotation=90;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;203&quot; y=&quot;122&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--31&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--10&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0.658;exitY=0.003;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;vXL_AHSKHcyXGbASRHFB-5&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;86&quot; y=&quot;142&quot; /&gt;&#10;            &lt;/Array&gt;&#10;            &lt;mxPoint x=&quot;86&quot; y=&quot;173&quot; as=&quot;sourcePoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--32&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;P-101&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;193&quot; y=&quot;92&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--35&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--2&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.682;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--33&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;187&quot; y=&quot;755&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--36&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--33&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.945;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--2&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;319&quot; y=&quot;599&quot; /&gt;&#10;            &lt;/Array&gt;&#10;            &lt;mxPoint x=&quot;388&quot; y=&quot;672&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--33&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.heat_exchangers.reboiler;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;33&quot; width=&quot;91&quot; x=&quot;233&quot; y=&quot;732&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--38&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--2&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.124;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--37&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;217&quot; y=&quot;524&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--37&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.heat_exchangers.condenser;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;50&quot; width=&quot;50&quot; x=&quot;280&quot; y=&quot;499&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--40&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;W-200&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;275&quot; y=&quot;542&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--41&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.vessels.jacketed_mixing_vessel;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;174&quot; width=&quot;100&quot; x=&quot;768.5&quot; y=&quot;534&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--42&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.pumps_-_din.hydraulic;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;rotation=90;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;532.5&quot; y=&quot;601&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--46&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--3&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=-0.059;entryY=0.728;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0.966;exitY=0.246;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--25&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;893&quot; y=&quot;4&quot; /&gt;&#10;              &lt;mxPoint x=&quot;892&quot; y=&quot;360&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--47&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--25&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.94;entryDx=0;entryDy=0;entryPerimeter=0;exitX=1.036;exitY=0.7;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;vXL_AHSKHcyXGbASRHFB-2&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;680&quot; y=&quot;359&quot; /&gt;&#10;              &lt;mxPoint x=&quot;529&quot; y=&quot;359&quot; /&gt;&#10;              &lt;mxPoint x=&quot;383&quot; y=&quot;359&quot; /&gt;&#10;              &lt;mxPoint x=&quot;383&quot; y=&quot;302&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--48&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;H-100&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;776&quot; y=&quot;377&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--50&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;V-500&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;1009&quot; y=&quot;489&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--53&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--42&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.09;entryY=0.499;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--41&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;777.5&quot; y=&quot;618&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--54&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;P-200&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;522.5&quot; y=&quot;641&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--58&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;C 200&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;155.5&quot; y=&quot;481&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--59&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;Gin&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;69.5&quot; y=&quot;585.5&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--61&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;R-200&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;788.5&quot; y=&quot;708&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;ICTHCTXNF9rGMgBAgNH--62&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;W-201&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;253&quot; y=&quot;762&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;MTt9KdqjOzxLv-477lOy-2&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.vessels.bunker_(conical_bottom);html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;100&quot; width=&quot;100&quot; x=&quot;989&quot; y=&quot;162&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;MTt9KdqjOzxLv-477lOy-4&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;H-400&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;962&quot; y=&quot;310&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;MTt9KdqjOzxLv-477lOy-5&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;V-400&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;1009&quot; y=&quot;140&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-16&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;&quot; target=&quot;rc4HosENomGC4n3hzhHG-1&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;453&quot; y=&quot;-74.69228108723951&quot; as=&quot;sourcePoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-17&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;rc4HosENomGC4n3hzhHG-1&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;532.2563852163462&quot; y=&quot;30.333361503405513&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-1&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.centrifuges.centrifuge_(high_speed);html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;110&quot; width=&quot;100&quot; x=&quot;403&quot; y=&quot;-24&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-3&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;C-100&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;423&quot; y=&quot;86&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-4&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;rc4HosENomGC4n3hzhHG-5&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.354;entryY=-0.004;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--10&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;71&quot; y=&quot;170&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-5&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.pumps_-_din.hydraulic;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;rotation=90;flipV=1;legacyAnchorPoints=0;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;243&quot; y=&quot;13&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-8&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;rc4HosENomGC4n3hzhHG-5&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;402&quot; y=&quot;33&quot; as=&quot;sourcePoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-9&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;P-100&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;235&quot; y=&quot;56&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-11&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;AbA_D3RttcQV1H--E_QU-22&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.712;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;vXL_AHSKHcyXGbASRHFB-6&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;1038.9999999999995&quot; y=&quot;362&quot; as=&quot;sourcePoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-12&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.pumps_-_din.hydraulic;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;rotation=90;direction=north;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;901&quot; y=&quot;475&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-13&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--41&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0.896;exitY=0.297;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;rc4HosENomGC4n3hzhHG-12&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-14&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;rc4HosENomGC4n3hzhHG-12&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.004;entryY=0.424;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;vXL_AHSKHcyXGbASRHFB-6&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-15&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;P-201&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;841&quot; y=&quot;480&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-18&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;Pulp&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;522.5&quot; y=&quot;16&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;rc4HosENomGC4n3hzhHG-19&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;Oranges&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;423&quot; y=&quot;-102&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-8&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;nuEoLJ65BHsQHth_7X1R-5&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;613.6857212611608&quot; y=&quot;529.1428571428571&quot; as=&quot;sourcePoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-5&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.pumps_-_din.hydraulic;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;rotation=90;direction=east;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;696&quot; y=&quot;510&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-6&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;nuEoLJ65BHsQHth_7X1R-5&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.303;entryY=0.218;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--41&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;798&quot; y=&quot;530&quot; /&gt;&#10;              &lt;mxPoint x=&quot;798&quot; y=&quot;572&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-7&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;P-202&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;686&quot; y=&quot;550&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-9&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;Blue Curacao&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;552&quot; y=&quot;513&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-29&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;nuEoLJ65BHsQHth_7X1R-10&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=none;endFill=0;&quot; target=&quot;AbA_D3RttcQV1H--E_QU-27&quot; value=&quot;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-10&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;TT&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;200&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;102.5&quot; y=&quot;673&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-12&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;startArrow=none;startFill=0;endArrow=none;endFill=0;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;142.5&quot; y=&quot;693&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;154&quot; y=&quot;692.91&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-14&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;FT&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;100&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;335&quot; y=&quot;217&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-15&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;startArrow=none;startFill=0;endArrow=none;endFill=0;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;354.88&quot; y=&quot;196&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;354.88&quot; y=&quot;217&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-33&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;nuEoLJ65BHsQHth_7X1R-16&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=none;endFill=0;dashed=1;&quot; target=&quot;AbA_D3RttcQV1H--E_QU-30&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-16&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;FT&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;101&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;700&quot; y=&quot;300&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-17&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;nuEoLJ65BHsQHth_7X1R-16&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;startArrow=none;startFill=0;endArrow=none;endFill=0;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;720.0000000000001&quot; y=&quot;345.5&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;720&quot; y=&quot;359&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;nuEoLJ65BHsQHth_7X1R-20&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;vXL_AHSKHcyXGbASRHFB-5&quot; style=&quot;endArrow=none;dashed=1;html=1;rounded=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;exitX=0.998;exitY=0.542;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;nuEoLJ65BHsQHth_7X1R-14&quot; value=&quot;&quot;&gt;&#10;          &lt;mxGeometry height=&quot;50&quot; relative=&quot;1&quot; width=&quot;50&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;221&quot; y=&quot;280&quot; /&gt;&#10;              &lt;mxPoint x=&quot;355&quot; y=&quot;280&quot; /&gt;&#10;            &lt;/Array&gt;&#10;            &lt;mxPoint x=&quot;228&quot; y=&quot;294&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;278&quot; y=&quot;244&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-3&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--10&quot; style=&quot;edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.181;exitY=0.01;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;AbA_D3RttcQV1H--E_QU-2&quot; value=&quot;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;62&quot; y=&quot;133&quot; /&gt;&#10;              &lt;mxPoint x=&quot;14&quot; y=&quot;133&quot; /&gt;&#10;              &lt;mxPoint x=&quot;15&quot; y=&quot;424&quot; /&gt;&#10;            &lt;/Array&gt;&#10;            &lt;mxPoint x=&quot;62&quot; y=&quot;176&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;22&quot; y=&quot;420&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-2&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.pumps_-_din.hydraulic;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;rotation=90;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;139&quot; y=&quot;403&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-4&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;AbA_D3RttcQV1H--E_QU-2&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.297;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;vXL_AHSKHcyXGbASRHFB-6&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;965&quot; y=&quot;423&quot; /&gt;&#10;              &lt;mxPoint x=&quot;965&quot; y=&quot;419&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-5&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;P-102&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;133&quot; y=&quot;373&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-6&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--37&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.013;entryY=0.323;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--27&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-7&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--27&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--42&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;485&quot; y=&quot;621&quot; /&gt;&#10;              &lt;mxPoint x=&quot;485&quot; y=&quot;621&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-12&quot; parent=&quot;1&quot; style=&quot;shape=mxgraph.pid.pumps_-_din.hydraulic;html=1;pointerEvents=1;align=center;verticalLabelPosition=bottom;verticalAlign=top;dashed=0;rotation=90;direction=north;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;1107&quot; y=&quot;551.8&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-15&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;AbA_D3RttcQV1H--E_QU-12&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;1059&quot; y=&quot;656&quot; as=&quot;sourcePoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-16&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;P-300&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;1047&quot; y=&quot;556.8&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-18&quot; parent=&quot;1&quot; style=&quot;text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;&quot; value=&quot;Grenadine&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;30&quot; width=&quot;60&quot; x=&quot;999&quot; y=&quot;641&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-19&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;AbA_D3RttcQV1H--E_QU-12&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1.006;entryY=0.261;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;vXL_AHSKHcyXGbASRHFB-6&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;1127&quot; y=&quot;415&quot; /&gt;&#10;            &lt;/Array&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-20&quot; edge=&quot;1&quot; parent=&quot;1&quot; style=&quot;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;startArrow=none;startFill=0;endArrow=none;endFill=0;&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;mxPoint x=&quot;527&quot; y=&quot;320&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;535.5&quot; y=&quot;320&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-31&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;AbA_D3RttcQV1H--E_QU-21&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=none;endFill=0;dashed=1;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--8&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-32&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;AbA_D3RttcQV1H--E_QU-21&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=none;endFill=0;dashed=1;&quot; target=&quot;AbA_D3RttcQV1H--E_QU-30&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-21&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;TIC&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;101&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;536&quot; y=&quot;241&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-22&quot; parent=&quot;1&quot; style=&quot;verticalLabelPosition=bottom;align=center;html=1;verticalAlign=top;pointerEvents=1;dashed=0;shape=mxgraph.pid2valves.valve;valveType=gate;actuator=powered;direction=south;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;50&quot; width=&quot;50&quot; x=&quot;1025&quot; y=&quot;295&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-23&quot; parent=&quot;AbA_D3RttcQV1H--E_QU-22&quot; style=&quot;part=1;strokeColor=none;fillColor=none;fontStyle=1;fontSize=14;rotation=180;&quot; value=&quot;&quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;15&quot; width=&quot;20.416666666666668&quot; x=&quot;18.958333333333336&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-26&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;MTt9KdqjOzxLv-477lOy-2&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=-0.006;entryY=0.719;entryDx=0;entryDy=0;entryPerimeter=0;&quot; target=&quot;AbA_D3RttcQV1H--E_QU-22&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-28&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;ICTHCTXNF9rGMgBAgNH--33&quot; style=&quot;endArrow=none;dashed=1;html=1;rounded=0;exitX=0.102;exitY=0.957;exitDx=0;exitDy=0;exitPerimeter=0;&quot; target=&quot;AbA_D3RttcQV1H--E_QU-27&quot; value=&quot;&quot;&gt;&#10;          &lt;mxGeometry height=&quot;50&quot; relative=&quot;1&quot; width=&quot;50&quot; as=&quot;geometry&quot;&gt;&#10;            &lt;Array as=&quot;points&quot;&gt;&#10;              &lt;mxPoint x=&quot;242.5&quot; y=&quot;772&quot; /&gt;&#10;              &lt;mxPoint x=&quot;195.5&quot; y=&quot;773&quot; /&gt;&#10;              &lt;mxPoint x=&quot;124.5&quot; y=&quot;773&quot; /&gt;&#10;            &lt;/Array&gt;&#10;            &lt;mxPoint x=&quot;242&quot; y=&quot;764&quot; as=&quot;sourcePoint&quot; /&gt;&#10;            &lt;mxPoint x=&quot;124.5&quot; y=&quot;712&quot; as=&quot;targetPoint&quot; /&gt;&#10;          &lt;/mxGeometry&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-27&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;TIC&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;200&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;102.5&quot; y=&quot;726&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-35&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;AbA_D3RttcQV1H--E_QU-30&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=none;endFill=0;dashed=1;&quot; target=&quot;ICTHCTXNF9rGMgBAgNH--26&quot;&gt;&#10;          &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;        &lt;mxCell id=&quot;AbA_D3RttcQV1H--E_QU-30&quot; parent=&quot;1&quot; style=&quot;html=1;outlineConnect=0;align=center;dashed=0;aspect=fixed;shape=mxgraph.pid2inst.discInst;mounting=local&quot; value=&quot;&amp;lt;table cellpadding=&amp;quot;4&amp;quot; cellspacing=&amp;quot;0&amp;quot; border=&amp;quot;0&amp;quot; style=&amp;quot;font-size:1em;width:100%;height:100%;&amp;quot;&amp;gt;&amp;lt;tbody&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;FIC&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;tr&amp;gt;&amp;lt;td&amp;gt;101&amp;lt;/td&amp;gt;&amp;lt;/tr&amp;gt;&amp;lt;/tbody&amp;gt;&amp;lt;/table&amp;gt; &quot; vertex=&quot;1&quot;&gt;&#10;          &lt;mxGeometry height=&quot;40&quot; width=&quot;40&quot; x=&quot;700&quot; y=&quot;241&quot; as=&quot;geometry&quot; /&gt;&#10;        &lt;/mxCell&gt;&#10;      &lt;/root&gt;&#10;    &lt;/mxGraphModel&gt;&#10;  &lt;/diagram&gt;&#10;&lt;/mxfile&gt;&#10;"><defs/><rect fill="#ffffff" width="100%" height="100%" x="0" y="0" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212));"/><g><g data-cell-id="0"><g data-cell-id="1"><g data-cell-id="vXL_AHSKHcyXGbASRHFB-2"><g transform="translate(0.5,0.5)"><rect x="398" y="291" width="100" height="120" fill="none" stroke="none" pointer-events="all"/><rect x="403" y="291" width="90" height="120" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 413 291 L 413 411 M 423 291 L 423 411 M 433 291 L 433 411 M 443 291 L 443 411 M 453 291 L 453 411 M 463 291 L 463 411 M 473 291 L 473 411 M 483 291 L 483 411 M 398 294 L 398 302 M 398 400 L 398 408 M 498 294 L 498 302 M 498 400 L 498 408 M 398 298 L 403 298 L 493 404 L 498 404 M 398 404 L 403 404 L 493 298 L 498 298" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="vXL_AHSKHcyXGbASRHFB-6"><g transform="translate(0.5,0.5)"><rect x="982" y="491" width="100" height="100" fill="none" stroke="none" pointer-events="all"/><path d="M 982 491 L 982 561 L 1032 591 L 1082 561 L 1082 491" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--15"><g transform="translate(0.5,0.5)"><path d="M 348 277 L 348 298" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--1"><g transform="translate(0.5,0.5)"><ellipse cx="348" cy="257" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 328.2 256.2 L 367.8 256.2 M 328.2 257.8 L 367.8 257.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 257px; margin-left: 348px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>TI</td></tr><tr><td>100<br /></td></tr></tbody></table> </div></div></div></foreignObject><text x="348" y="261" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">TI100...</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--57"><g transform="translate(0.5,0.5)"><path d="M 107.79 702.5 L 140.63 702.5" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 145.88 702.5 L 138.88 706 L 140.63 702.5 L 138.88 699 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--2"><g transform="translate(0.5,0.5)"><path d="M 147 586 C 147 577.72 161.1 571 178.5 571 C 195.9 571 210 577.72 210 586 L 210 819 C 210 827.28 195.9 834 178.5 834 C 161.1 834 147 827.28 147 819 Z" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--3"><g transform="translate(0.5,0.5)"><rect x="672" y="78" width="156" height="112" fill="none" stroke="none" pointer-events="all"/><path d="M 679.8 85.47 L 679.8 190 L 820.2 190 L 820.2 85.47" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 672 92.93 L 672 78 L 828 78 L 828 92.93" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--4"><g transform="translate(0.5,0.5)"><rect x="416" y="412" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 427px; margin-left: 417px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">W-100</div></div></div></foreignObject><text x="446" y="431" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">W-100</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--6"><g transform="translate(0.5,0.5)"><ellipse cx="544" cy="267" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 524.2 266.2 L 563.8 266.2 M 524.2 267.8 L 563.8 267.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 267px; margin-left: 544px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>TI</td></tr><tr><td>103<br /></td></tr></tbody></table> </div></div></div></foreignObject><text x="544" y="271" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">TI103...</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--7"><g transform="translate(0.5,0.5)"><ellipse cx="444" cy="492" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 424.2 491.2 L 463.8 491.2 M 424.2 492.8 L 463.8 492.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 492px; margin-left: 444px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>TI</td></tr><tr><td>102<br /></td></tr></tbody></table> </div></div></div></foreignObject><text x="444" y="496" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">TI102...</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--8"><g transform="translate(0.5,0.5)"><ellipse cx="549" cy="422" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 529.2 421.2 L 568.8 421.2 M 529.2 422.8 L 568.8 422.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 422px; margin-left: 549px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>TT</td></tr><tr><td>101</td></tr></tbody></table> </div></div></div></foreignObject><text x="549" y="426" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">TT101 </text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--10"><g transform="translate(0.5,0.5)"><rect x="46" y="277" width="50" height="135" fill="none" stroke="none" pointer-events="all"/><path d="M 96 286.21 L 96 382.05 C 96 387.14 84.81 391.27 71 391.27 C 57.19 391.27 46 387.14 46 382.05 L 46 286.21 C 46 281.12 57.19 277 71 277 C 84.81 277 96 281.12 96 286.21 Z" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 46 286.21 L 96 286.21 M 46 382.05 L 96 382.05 M 46 382.05 L 46 412 L 96 412 L 96 382.05" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--11"><g transform="translate(0.5,0.5)"><path d="M 236 244 L 295 244 L 295 298 L 391.63 298.19" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 396.88 298.2 L 389.88 301.68 L 391.63 298.19 L 389.89 294.68 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--13"><g transform="translate(0.5,0.5)"><path d="M 498 403.8 L 520 404 L 520 444 L 146 442 L 144 227 L 73 227 L 72 270.5" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 71.88 275.75 L 68.54 268.67 L 72 270.5 L 75.54 268.83 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--16"><g transform="translate(0.5,0.5)"><rect x="41" y="412" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 427px; margin-left: 42px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">V-100</div></div></div></foreignObject><text x="71" y="431" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">V-100</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--18"><g transform="translate(0.5,0.5)"><rect x="725" y="190" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 205px; margin-left: 726px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">Glycol chiller</div></div></div></foreignObject><text x="755" y="209" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">Glycol chi...</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--19"><g transform="translate(0.5,0.5)"><path d="M 498 298.2 L 591 298 L 591 108 L 672.65 107.81" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 677.9 107.79 L 670.91 111.31 L 672.65 107.81 L 670.89 104.31 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--20"><g transform="translate(0.5,0.5)"><path d="M 543.8 287 L 543.8 298" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--23"><g transform="translate(0.5,0.5)"><path d="M 443.82 461 L 443.82 472" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--25"><g transform="translate(0.5,0.5)"><rect x="786.75" y="419" width="24.5" height="21" fill="#ffffff" stroke="#000000" transform="translate(799,0)scale(-1,1)translate(-799,0)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 799 440 L 799 461" fill="none" stroke="#000000" stroke-linejoin="round" stroke-miterlimit="10" transform="translate(799,0)scale(-1,1)translate(-799,0)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><g fill="#000000" font-family="Helvetica" font-weight="bold" text-anchor="middle" transform="translate(799,0)scale(-1,1)translate(-799,0)" font-size="9.8px" style="fill: light-dark(rgb(0, 0, 0), rgb(237, 237, 237));"/><path d="M 764 443 L 799 461 L 764 479 Z M 834 443 L 799 461 L 834 479 Z" fill="#ffffff" stroke="#000000" stroke-linejoin="round" stroke-miterlimit="10" transform="translate(799,0)scale(-1,1)translate(-799,0)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--26"><g transform="translate(0.5,0.5)"><rect x="786.75" y="419" width="24.5" height="21" fill="none" stroke="none" pointer-events="all"/></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--27"><g transform="translate(0.5,0.5)"><rect x="407" y="690.5" width="50" height="135" fill="none" stroke="none" pointer-events="all"/><path d="M 457 699.71 L 457 795.55 C 457 800.64 445.81 804.77 432 804.77 C 418.19 804.77 407 800.64 407 795.55 L 407 699.71 C 407 694.62 418.19 690.5 432 690.5 C 445.81 690.5 457 694.62 457 699.71 Z" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 407 699.71 L 457 699.71 M 407 795.55 L 457 795.55 M 407 795.55 L 407 825.5 L 457 825.5 L 457 795.55" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--28"><g transform="translate(0.5,0.5)"><rect x="402" y="825.5" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 841px; margin-left: 403px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">V-200</div></div></div></foreignObject><text x="432" y="844" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">V-200</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--29"><g transform="translate(0.5,0.5)"/></g><g data-cell-id="vXL_AHSKHcyXGbASRHFB-5"><g transform="translate(0.5,0.5)"><rect x="196" y="224" width="40" height="40" fill="none" stroke="none" transform="rotate(90,216,244)" pointer-events="all"/><ellipse cx="216" cy="244" rx="20" ry="20" fill="#ffffff" stroke="#000000" transform="rotate(90,216,244)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 196 244 L 216 224 L 236 244" fill="none" stroke="#000000" stroke-miterlimit="10" transform="rotate(90,216,244)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--31"><g transform="translate(0.5,0.5)"><path d="M 78.9 277.4 L 79 244 L 189.63 244" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 194.88 244 L 187.88 247.5 L 189.63 244 L 187.88 240.5 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--32"><g transform="translate(0.5,0.5)"><rect x="186" y="194" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 209px; margin-left: 187px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">P-101</div></div></div></foreignObject><text x="216" y="213" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">P-101</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--35"><g transform="translate(0.5,0.5)"><path d="M 179.78 834 L 180 857 L 219.63 856.57" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 224.88 856.52 L 217.92 860.09 L 219.63 856.57 L 217.84 853.09 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--36"><g transform="translate(0.5,0.5)"><path d="M 312 834 L 312 701 L 216.37 702.07" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 211.12 702.13 L 218.08 698.56 L 216.37 702.07 L 218.16 705.55 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--33"><g transform="translate(0.5,0.5)"><rect x="226" y="834" width="91" height="33" fill="none" stroke="none" pointer-events="all"/><path d="M 230.48 849 L 242.41 849 L 242.41 864 L 230.48 864 C 228 864 226 860.64 226 856.5 C 226 852.36 228 849 230.48 849 M 245.39 849 L 252.36 849 L 267.27 834 L 312.03 834 C 314.77 834 317 840.72 317 849 C 317 857.28 314.77 864 312.03 864 L 245.39 864 Z M 230.48 849 L 230.48 864 M 267.27 834 L 267.27 864 M 312.03 834 L 312.03 864" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><rect x="242.41" y="846" width="2.98" height="21" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--38"><g transform="translate(0.5,0.5)"><path d="M 210 626 L 272.83 626" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 278.08 626 L 271.08 629.5 L 272.83 626 L 271.08 622.5 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--37"><g transform="translate(0.5,0.5)"><rect x="273" y="601" width="50" height="50" fill="none" stroke="none" pointer-events="all"/><ellipse cx="298" cy="626" rx="18.75" ry="18.75" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 279.25 626 L 285.5 626 L 291.75 616.63 L 304.25 635.38 L 310.5 626 L 316.75 626 M 323 601 L 273 651 M 316.75 603.81 L 323 601 L 320.19 607.25 L 319.88 604.13 Z" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--40"><g transform="translate(0.5,0.5)"><rect x="268" y="644" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 659px; margin-left: 269px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">W-200</div></div></div></foreignObject><text x="298" y="663" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">W-200</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--41"><g transform="translate(0.5,0.5)"><rect x="761.5" y="636" width="100" height="174" fill="none" stroke="none" pointer-events="all"/><path d="M 771.56 735.71 L 761.58 745.68 L 761.58 780.58 C 761.5 794.84 778.21 807.15 801.51 810 L 807.5 800.53 Z M 851.43 735.71 L 861.41 745.68 L 861.41 780.58 C 861.49 794.84 844.78 807.15 821.48 810 L 815.49 800.53 Z" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 771.56 685.86 C 771.56 680.51 779.17 675.58 791.53 672.9 C 803.88 670.23 819.11 670.23 831.46 672.9 C 843.82 675.58 851.43 680.51 851.43 685.86 L 851.43 775.6 C 851.43 784.5 843.82 792.73 831.46 797.19 C 819.11 801.64 803.88 801.64 791.53 797.19 C 779.17 792.73 771.56 784.5 771.56 775.6 Z" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><rect x="806.5" y="636" width="9.98" height="19.94" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 804.51 638.99 L 818.48 638.99 M 804.51 652.95 L 818.48 652.95 M 811.5 655.94 L 811.5 786.07" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><ellipse cx="801.51" cy="785.57" rx="9.98302885095338" ry="2.9914040114613183" fill="none" stroke="#000000" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><ellipse cx="821.48" cy="785.57" rx="9.98302885095338" ry="2.9914040114613183" fill="none" stroke="#000000" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--42"><g transform="translate(0.5,0.5)"><rect x="525.5" y="703" width="40" height="40" fill="none" stroke="none" transform="rotate(90,545.5,723)" pointer-events="all"/><ellipse cx="545.5" cy="723" rx="20" ry="20" fill="#ffffff" stroke="#000000" transform="rotate(90,545.5,723)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 525.5 723 L 545.5 703 L 565.5 723" fill="none" stroke="#000000" stroke-miterlimit="10" transform="rotate(90,545.5,723)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--46"><g transform="translate(0.5,0.5)"><path d="M 822.7 105.55 L 886 106 L 885 462 L 844.5 462.59" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 839.25 462.66 L 846.2 459.06 L 844.5 462.59 L 846.3 466.06 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--47"><g transform="translate(0.5,0.5)"><path d="M 761.48 461 L 673 461 L 522 461 L 376 461 L 376 404 L 391.63 403.86" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 396.88 403.81 L 389.91 407.37 L 391.63 403.86 L 389.85 400.37 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--48"><g transform="translate(0.5,0.5)"><rect x="769" y="479" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 494px; margin-left: 770px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">H-100</div></div></div></foreignObject><text x="799" y="498" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">H-100</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--50"><g transform="translate(0.5,0.5)"><rect x="1002" y="591" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 606px; margin-left: 1003px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">V-500</div></div></div></foreignObject><text x="1032" y="610" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">V-500</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--53"><g transform="translate(0.5,0.5)"><path d="M 565.5 722.98 L 764.13 722.83" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 769.38 722.83 L 762.38 726.33 L 764.13 722.83 L 762.38 719.33 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--54"><g transform="translate(0.5,0.5)"><rect x="515.5" y="743" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 758px; margin-left: 517px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">P-200</div></div></div></foreignObject><text x="546" y="762" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">P-200</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--58"><g transform="translate(0.5,0.5)"><rect x="148.5" y="583" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 598px; margin-left: 150px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">C 200</div></div></div></foreignObject><text x="179" y="602" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">C 200</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--59"><g transform="translate(0.5,0.5)"><rect x="62.5" y="687.5" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 703px; margin-left: 64px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">Gin</div></div></div></foreignObject><text x="93" y="706" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">Gin</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--61"><g transform="translate(0.5,0.5)"><rect x="781.5" y="810" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 825px; margin-left: 783px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">R-200</div></div></div></foreignObject><text x="812" y="829" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">R-200</text></switch></g></g></g><g data-cell-id="ICTHCTXNF9rGMgBAgNH--62"><g transform="translate(0.5,0.5)"><rect x="246" y="864" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 879px; margin-left: 247px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">W-201</div></div></div></foreignObject><text x="276" y="883" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">W-201</text></switch></g></g></g><g data-cell-id="MTt9KdqjOzxLv-477lOy-2"><g transform="translate(0.5,0.5)"><rect x="982" y="264" width="100" height="100" fill="none" stroke="none" pointer-events="all"/><path d="M 982 264 L 982 334 L 1032 364 L 1082 334 L 1082 264" fill="#ffffff" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="MTt9KdqjOzxLv-477lOy-4"><g transform="translate(0.5,0.5)"><rect x="955" y="412" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 427px; margin-left: 956px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">H-400</div></div></div></foreignObject><text x="985" y="431" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">H-400</text></switch></g></g></g><g data-cell-id="MTt9KdqjOzxLv-477lOy-5"><g transform="translate(0.5,0.5)"><rect x="1002" y="242" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 257px; margin-left: 1003px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">V-400</div></div></div></foreignObject><text x="1032" y="261" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">V-400</text></switch></g></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-16"><g transform="translate(0.5,0.5)"><path d="M 446 27.31 L 446 71.63" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 446 76.88 L 442.5 69.88 L 446 71.63 L 449.5 69.88 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-17"><g transform="translate(0.5,0.5)"><path d="M 496 133 L 516 133 L 518.9 132.79" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 524.14 132.41 L 517.41 136.41 L 518.9 132.79 L 516.91 129.43 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-1"><g transform="translate(0.5,0.5)"><rect x="396" y="78" width="100" height="110" fill="none" stroke="none" pointer-events="all"/><rect x="396" y="78" width="100" height="100" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 431 103 L 406 168 L 486 168 L 461 103 M 446 168 L 446 188" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-3"><g transform="translate(0.5,0.5)"><rect x="416" y="188" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 203px; margin-left: 417px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">C-100</div></div></div></foreignObject><text x="446" y="207" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">C-100</text></switch></g></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-4"><g transform="translate(0.5,0.5)"><path d="M 236 135 L 63.67 135 L 63.7 270.09" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 63.7 275.34 L 60.2 268.34 L 63.7 270.09 L 67.2 268.34 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-5"><g transform="translate(0.5,0.5)"><rect x="236" y="115" width="40" height="40" fill="none" stroke="none" transform="translate(0,135)scale(1,-1)translate(0,-135)rotate(-90,256,135)" pointer-events="all"/><ellipse cx="256" cy="135" rx="20" ry="20" fill="#ffffff" stroke="#000000" transform="translate(0,135)scale(1,-1)translate(0,-135)rotate(-90,256,135)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 236 135 L 256 115 L 276 135" fill="none" stroke="#000000" stroke-miterlimit="10" transform="translate(0,135)scale(1,-1)translate(0,-135)rotate(-90,256,135)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-8"><g transform="translate(0.5,0.5)"><path d="M 395 135 L 282.37 135" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 277.12 135 L 284.12 131.5 L 282.37 135 L 284.12 138.5 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-9"><g transform="translate(0.5,0.5)"><rect x="228" y="158" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 173px; margin-left: 229px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">P-100</div></div></div></foreignObject><text x="258" y="177" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">P-100</text></switch></g></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-11"><g transform="translate(0.5,0.5)"><path d="M 1032.4 447 L 1032.44 469 L 1032.13 484.63" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 1032.02 489.88 L 1028.66 482.81 L 1032.13 484.63 L 1035.66 482.95 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-12"><g transform="translate(0.5,0.5)"><rect x="894" y="577" width="40" height="40" fill="none" stroke="none" transform="rotate(360,914,597)" pointer-events="all"/><ellipse cx="914" cy="597" rx="20" ry="20" fill="#ffffff" stroke="#000000" transform="rotate(360,914,597)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 894 597 L 914 577 L 934 597" fill="none" stroke="#000000" stroke-miterlimit="10" transform="rotate(360,914,597)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-13"><g transform="translate(0.5,0.5)"><path d="M 851.1 687.68 L 914 687.67 L 914 623.37" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 914 618.12 L 917.5 625.12 L 914 623.37 L 910.5 625.12 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-14"><g transform="translate(0.5,0.5)"><path d="M 914 577 L 914 533.44 L 976.03 533.4" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 981.28 533.4 L 974.28 536.91 L 976.03 533.4 L 974.28 529.91 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-15"><g transform="translate(0.5,0.5)"><rect x="834" y="582" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 597px; margin-left: 835px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">P-201</div></div></div></foreignObject><text x="864" y="601" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">P-201</text></switch></g></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-18"><g transform="translate(0.5,0.5)"><rect x="515.5" y="118" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 133px; margin-left: 517px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">Pulp</div></div></div></foreignObject><text x="546" y="137" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">Pulp</text></switch></g></g></g><g data-cell-id="rc4HosENomGC4n3hzhHG-19"><g transform="translate(0.5,0.5)"><rect x="416" y="0" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 15px; margin-left: 417px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">Oranges</div></div></div></foreignObject><text x="446" y="19" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">Oranges</text></switch></g></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-8"><g transform="translate(0.5,0.5)"><path d="M 606.69 631.14 L 648.33 631.11 L 682.63 631.86" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 687.88 631.98 L 680.81 635.32 L 682.63 631.86 L 680.96 628.32 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-5"><g transform="translate(0.5,0.5)"><rect x="689" y="612" width="40" height="40" fill="none" stroke="none" transform="rotate(90,709,632)" pointer-events="all"/><ellipse cx="709" cy="632" rx="20" ry="20" fill="#ffffff" stroke="#000000" transform="rotate(90,709,632)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 689 632 L 709 612 L 729 632" fill="none" stroke="#000000" stroke-miterlimit="10" transform="rotate(90,709,632)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-6"><g transform="translate(0.5,0.5)"><path d="M 729 632 L 791 632 L 791 667.52" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 791 672.77 L 787.5 665.77 L 791 667.52 L 794.5 665.77 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-7"><g transform="translate(0.5,0.5)"><rect x="679" y="652" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 667px; margin-left: 680px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">P-202</div></div></div></foreignObject><text x="709" y="671" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">P-202</text></switch></g></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-9"><g transform="translate(0.5,0.5)"><rect x="545" y="615" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 630px; margin-left: 546px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">Blue Curacao</div></div></div></foreignObject><text x="575" y="634" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">Blue Curac...</text></switch></g></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-29"><g transform="translate(0.5,0.5)"><path d="M 115.5 815 L 115.5 828" fill="none" stroke="#000000" stroke-miterlimit="10" stroke-dasharray="3 3" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-10"><g transform="translate(0.5,0.5)"><ellipse cx="115.5" cy="795" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 95.7 794.2 L 135.3 794.2 M 95.7 795.8 L 135.3 795.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 795px; margin-left: 116px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>TT</td></tr><tr><td>200</td></tr></tbody></table> </div></div></div></foreignObject><text x="116" y="799" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">TT200 </text></switch></g></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-12"><g transform="translate(0.5,0.5)"><path d="M 135.5 795 L 147 794.91" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-14"><g transform="translate(0.5,0.5)"><ellipse cx="348" cy="339" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 328.2 338.2 L 367.8 338.2 M 328.2 339.8 L 367.8 339.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 339px; margin-left: 348px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>FT</td></tr><tr><td>100</td></tr></tbody></table> </div></div></div></foreignObject><text x="348" y="343" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">FT100 </text></switch></g></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-15"><g transform="translate(0.5,0.5)"><path d="M 347.88 298 L 347.88 319" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-33"><g transform="translate(0.5,0.5)"><path d="M 713 402 L 713 382 L 713 403 L 713 383" fill="none" stroke="#000000" stroke-miterlimit="10" stroke-dasharray="3 3" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-16"><g transform="translate(0.5,0.5)"><ellipse cx="713" cy="422" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 693.2 421.2 L 732.8 421.2 M 693.2 422.8 L 732.8 422.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 422px; margin-left: 713px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>FT</td></tr><tr><td>101</td></tr></tbody></table> </div></div></div></foreignObject><text x="713" y="426" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">FT101 </text></switch></g></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-17"><g transform="translate(0.5,0.5)"><path d="M 713 442 L 713 461" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="nuEoLJ65BHsQHth_7X1R-20"><g transform="translate(0.5,0.5)"><path d="M 214.32 263.92 L 214 382 L 348 382 L 348 359" fill="none" stroke="#000000" stroke-miterlimit="10" stroke-dasharray="3 3" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-3"><g transform="translate(0.5,0.5)"><path d="M 55.05 278.35 L 55 235 L 7 235 L 8 526 L 125.63 525.05" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 130.88 525.01 L 123.91 528.57 L 125.63 525.05 L 123.85 521.57 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-2"><g transform="translate(0.5,0.5)"><rect x="132" y="505" width="40" height="40" fill="none" stroke="none" transform="rotate(90,152,525)" pointer-events="all"/><ellipse cx="152" cy="525" rx="20" ry="20" fill="#ffffff" stroke="#000000" transform="rotate(90,152,525)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 132 525 L 152 505 L 172 525" fill="none" stroke="#000000" stroke-miterlimit="10" transform="rotate(90,152,525)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-4"><g transform="translate(0.5,0.5)"><path d="M 172 525 L 958 525 L 958 520.67 L 975.63 520.69" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 980.88 520.7 L 973.88 524.19 L 975.63 520.69 L 973.89 517.19 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-5"><g transform="translate(0.5,0.5)"><rect x="126" y="475" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 490px; margin-left: 127px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">P-102</div></div></div></foreignObject><text x="156" y="494" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">P-102</text></switch></g></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-6"><g transform="translate(0.5,0.5)"><path d="M 323 626 L 365 626 L 365 734.11 L 401.28 734.11" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 406.53 734.11 L 399.53 737.61 L 401.28 734.11 L 399.53 730.61 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-7"><g transform="translate(0.5,0.5)"><path d="M 457 723 L 478 723 L 519.13 723" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 524.38 723 L 517.38 726.5 L 519.13 723 L 517.38 719.5 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-12"><g transform="translate(0.5,0.5)"><rect x="1100" y="653.8" width="40" height="40" fill="none" stroke="none" transform="rotate(360,1120,673.8)" pointer-events="all"/><ellipse cx="1120" cy="673.8" rx="20" ry="20" fill="#ffffff" stroke="#000000" transform="rotate(360,1120,673.8)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 1100 673.8 L 1120 653.8 L 1140 673.8" fill="none" stroke="#000000" stroke-miterlimit="10" transform="rotate(360,1120,673.8)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-15"><g transform="translate(0.5,0.5)"><path d="M 1052 758 L 1120 758 L 1120 700.17" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 1120 694.92 L 1123.5 701.92 L 1120 700.17 L 1116.5 701.92 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-16"><g transform="translate(0.5,0.5)"><rect x="1040" y="658.8" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 674px; margin-left: 1041px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">P-300</div></div></div></foreignObject><text x="1070" y="677" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">P-300</text></switch></g></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-18"><g transform="translate(0.5,0.5)"><rect x="992" y="743" width="60" height="30" fill="none" stroke="none" pointer-events="all"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 58px; height: 1px; padding-top: 758px; margin-left: 993px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: normal; word-wrap: normal; ">Grenadine</div></div></div></foreignObject><text x="1022" y="762" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">Grenadine</text></switch></g></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-19"><g transform="translate(0.5,0.5)"><path d="M 1120 653.8 L 1120 517.11 L 1088.97 517.1" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 1083.72 517.1 L 1090.72 513.6 L 1088.97 517.1 L 1090.72 520.6 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-20"><g transform="translate(0.5,0.5)"><path d="M 520 422 L 528.5 422" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-31"><g transform="translate(0.5,0.5)"><path d="M 549 383 L 549 403 L 549 382 L 549 402" fill="none" stroke="#000000" stroke-miterlimit="10" stroke-dasharray="3 3" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-32"><g transform="translate(0.5,0.5)"><path d="M 569 363 L 693 363" fill="none" stroke="#000000" stroke-miterlimit="10" stroke-dasharray="3 3" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-21"><g transform="translate(0.5,0.5)"><ellipse cx="549" cy="363" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 529.2 362.2 L 568.8 362.2 M 529.2 363.8 L 568.8 363.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 363px; margin-left: 549px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>TIC</td></tr><tr><td>101</td></tr></tbody></table> </div></div></div></foreignObject><text x="549" y="367" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">TIC101 </text></switch></g></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-22"><g transform="translate(0.5,0.5)"><rect x="1034.25" y="397" width="17.5" height="17.5" fill="#ffffff" stroke="#000000" transform="rotate(90,1043,422)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 1043 414.5 L 1043 432" fill="none" stroke="#000000" stroke-linejoin="round" stroke-miterlimit="10" transform="rotate(90,1043,422)" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><g fill="#000000" font-family="Helvetica" font-weight="bold" text-anchor="middle" transform="rotate(90,1043,422)" font-size="7px" style="fill: light-dark(rgb(0, 0, 0), rgb(237, 237, 237));"/><path d="M 1018 417 L 1043 432 L 1018 447 Z M 1068 417 L 1043 432 L 1068 447 Z" fill="#ffffff" stroke="#000000" stroke-linejoin="round" stroke-miterlimit="10" transform="rotate(90,1043,422)" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-23"><g transform="translate(0.5,0.5)"><rect x="1036.96" y="397" width="20.42" height="15" fill="none" stroke="none" transform="rotate(180,1047.17,404.5)" pointer-events="all"/></g></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-26"><g transform="translate(0.5,0.5)"><path d="M 1032 364 L 1032 384 L 1032.02 390.33" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 1032.05 395.58 L 1028.52 388.6 L 1032.02 390.33 L 1035.52 388.57 Z" fill="#000000" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="fill: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-28"><g transform="translate(0.5,0.5)"><path d="M 235.28 865.58 L 235.5 874 L 188.5 875 L 117.5 875 L 116.98 868" fill="none" stroke="#000000" stroke-miterlimit="10" stroke-dasharray="3 3" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-27"><g transform="translate(0.5,0.5)"><ellipse cx="115.5" cy="848" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 95.7 847.2 L 135.3 847.2 M 95.7 848.8 L 135.3 848.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 848px; margin-left: 116px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>TIC</td></tr><tr><td>200</td></tr></tbody></table> </div></div></div></foreignObject><text x="116" y="852" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">TIC200 </text></switch></g></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-35"><g transform="translate(0.5,0.5)"><path d="M 733 363 L 799 363 L 799 419" fill="none" stroke="#000000" stroke-miterlimit="10" stroke-dasharray="3 3" pointer-events="stroke" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g></g><g data-cell-id="AbA_D3RttcQV1H--E_QU-30"><g transform="translate(0.5,0.5)"><ellipse cx="713" cy="363" rx="20" ry="20" fill="#ffffff" stroke="#000000" pointer-events="all" style="fill: light-dark(#ffffff, var(--ge-dark-color, #121212)); stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/><path d="M 693.2 362.2 L 732.8 362.2 M 693.2 363.8 L 732.8 363.8" fill="none" stroke="#000000" stroke-miterlimit="10" pointer-events="all" style="stroke: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));"/></g><g><g><switch><foreignObject style="overflow: visible; text-align: left;" pointer-events="none" width="100%" height="100%" requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility"><div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 1px; height: 1px; padding-top: 363px; margin-left: 713px;"><div style="box-sizing: border-box; font-size: 0; text-align: center; color: #000000; "><div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: light-dark(#000000, #ffffff); line-height: 1.2; pointer-events: all; white-space: nowrap; "><table cellpadding="4" cellspacing="0" border="0" style="font-size:1em;width:100%;height:100%;"><tbody><tr><td>FIC</td></tr><tr><td>101</td></tr></tbody></table> </div></div></div></foreignObject><text x="713" y="367" fill="light-dark(#000000, #ffffff)" font-family="Helvetica" font-size="12px" text-anchor="middle">FIC101 </text></switch></g></g></g></g></g></g></svg>
-
-        <!-- ── Overlays (SVG-coordinate space) ───────────────
-             Positions are in SVG px.  Each element is
-             left: X px; top: Y px; where X,Y is the centre
-             of the corresponding instrument bubble.           -->
-
-        <!-- ══════════════════════════════════════════════════════
-             INSTRUMENT BADGES  (centred on each circle, 25px up)
-             ══════════════════════════════════════════════════════ -->
-
-        <!-- TI100  Cold In    cx=348 cy=257 → temps[0] -->
-        <a href="/charts?sensor=hex" class="overlay badge badge-link" id="ti100"  style="left:348px; top:232px;">– °C</a>
-
-        <!-- TI103  Cold Out   cx=544 cy=267 → temps[1] -->
-        <a href="/charts?sensor=hex" class="overlay badge badge-link" id="ti103"  style="left:544px; top:242px;">– °C</a>
-
-        <!-- TI102  Hot In     cx=444 cy=492 → temps[2] -->
-        <a href="/charts?sensor=hex" class="overlay badge badge-link" id="ti102"  style="left:444px; top:467px;">– °C</a>
-
-        <!-- TT101  Hot Out    cx=549 cy=422 → temps[3] -->
-        <a href="/charts?sensor=hex" class="overlay badge badge-link" id="tt101"  style="left:549px; top:397px;">– °C</a>
-
-        <!-- TT200  Heater     cx=115 cy=795 → temps[4] -->
-        <a href="/charts?sensor=tt200" class="overlay badge badge-link" id="tt200"  style="left:116px; top:770px;">– °C</a>
-
-        <!-- TIC101 controller cx=549 cy=363 (servo setpoint) -->
-        <div class="overlay badge badge-ctrl" id="tic101" style="left:549px; top:338px;">SP</div>
-
-        <!-- TIC200 controller cx=115 cy=848 -->
-        <div class="overlay badge badge-ctrl" id="tic200" style="left:116px; top:823px;">SP</div>
-
-        <!-- FIC101 flow ctrl  cx=713 cy=363 -->
-        <div class="overlay badge badge-ctrl" id="fic101" style="left:713px; top:338px;">SP</div>
-
-        <!-- ══════════════════════════════════════════════════════
-             FLOW BADGES
-             ══════════════════════════════════════════════════════ -->
-
-        <!-- FT100  cx=348 cy=339 → flow1 -->
-        <a href="/charts?sensor=flow" class="overlay badge badge-flow badge-link" id="ft100"  style="left:348px; top:314px;">– L/min</a>
-
-        <!-- FT101  cx=713 cy=422 → flow2 -->
-        <a href="/charts?sensor=flow" class="overlay badge badge-flow badge-link" id="ft101"  style="left:713px; top:397px;">– L/min</a>
-
-        <!-- ══════════════════════════════════════════════════════
-             WEIGHT & VALVE
-             ══════════════════════════════════════════════════════ -->
-
-        <!-- V-500 cocktail vessel weight  label at (1032,610) -->
-        <a href="/charts?sensor=weight" class="overlay badge badge-weight badge-link" id="v500-weight" style="left:1032px; top:585px;">– g</a>
-
-        <!-- H-100 servo valve angle  label at (799,498) -->
-        <div class="overlay badge badge-heater" id="h100" style="left:799px; top:473px;">–°</div>
-
-        <!-- ══════════════════════════════════════════════════════
-             PUMP STATUS DOTS
-             ══════════════════════════════════════════════════════ -->
-
-        <!-- P-100  Centrifuge      cx=256 cy=135  pwmD pump4 -->
-        <div class="overlay pump-dot off" id="pd-p100" style="left:256px; top:135px;"></div>
-
-        <!-- P-101  OJ Recycle      cx=216 cy=244  pwmC pump3 -->
-        <div class="overlay pump-dot off" id="pd-p101" style="left:216px; top:244px;"></div>
-
-        <!-- P-102  Juice to glass  cx=152 cy=525  pwmA pump1 -->
-        <div class="overlay pump-dot off" id="pd-p102" style="left:152px; top:525px;"></div>
-
-        <!-- P-200  Alcohol         cx=546 cy=723  pwmB pump2 -->
-        <div class="overlay pump-dot off" id="pd-p200" style="left:546px; top:723px;"></div>
-
-        <!-- P-201                  cx=914 cy=597 -->
-        <div class="overlay pump-dot off" id="pd-p201" style="left:914px; top:597px;"></div>
-
-        <!-- P-202  Blue Curacao    cx=709 cy=632  pwmE pump5 -->
-        <div class="overlay pump-dot off" id="pd-p202" style="left:709px; top:632px;"></div>
-
-        <!-- P-300                  cx=1120 cy=674 -->
-        <div class="overlay pump-dot off" id="pd-p300" style="left:1120px; top:674px;"></div>
-
-        <!-- STIRRER  R-200 agitator  cx=812 cy=730 (centre of jacketed vessel) -->
-        <div class="overlay pump-dot off" id="pd-stirrer" style="left:812px; top:730px;"></div>
-
-      </div><!-- /pfd-wrap -->
-    </div><!-- /pfd-scaler -->
-  </div><!-- /scaler-container -->
-
-  <!-- Legend -->
-  <div class="legend">
-    <div class="legend-item"><div class="leg-dot" style="background:#1e3a8a"></div> Temperature (TI)</div>
-    <div class="legend-item"><div class="leg-dot" style="background:#7c3aed"></div> Weight (V-500)</div>
-    <div class="legend-item"><div class="leg-dot" style="background:#0891b2"></div> Flow rate (FT)</div>
-    <div class="legend-item"><div class="leg-dot" style="background:#16a34a"></div> Pump RUNNING</div>
-    <div class="legend-item"><div class="leg-dot" style="background:#22c55e"></div> Stirrer RUNNING</div>
-    <div class="legend-item"><div class="leg-dot" style="background:#ef4444"></div> Pump / Heater OFF</div>
-    <div class="legend-item"><div class="leg-dot" style="background:#dc2626"></div> Heater ON</div>
-  </div>
-</div><!-- /pfd-card -->
-
-<!-- ── SETPOINT CONTROL PANEL ─────────────────────────────────── -->
-<div class="pump-ctrl-card" id="sp-card">
-  <h2>Setpoint Control</h2>
-
-  <div class="sp-grid">
-
-    <!-- TIC-101: HEX exit temperature -->
-    <div class="sp-row">
-      <div class="sp-label">
-        <span class="sp-tag">TIC-101</span>
-        <span class="sp-desc">HEX exit temperature (TT-101)</span>
-      </div>
-      <div class="sp-inputs">
-        <input type="number" id="sp-tic101" min="0" max="30" step="0.5" value="11.0" class="sp-input">
-        <span class="sp-unit">°C</span>
-        <button class="sp-btn" onclick="sendSP('tic101', document.getElementById('sp-tic101').value)">Set</button>
-        <span class="sp-live">Current SP: <b id="sp-tic101-live">–</b> °C</span>
-      </div>
-    </div>
-
-    <!-- FIC-101: chiller flow rate -->
-    <div class="sp-row">
-      <div class="sp-label">
-        <span class="sp-tag">FIC-101</span>
-        <span class="sp-desc">Chiller flow setpoint (FT-101) — set 0 to disable</span>
-      </div>
-      <div class="sp-inputs">
-        <input type="number" id="sp-flow" min="0" max="20" step="0.1" value="0.0" class="sp-input">
-        <span class="sp-unit">L/min</span>
-        <button class="sp-btn" onclick="sendSP('flow', document.getElementById('sp-flow').value)">Set</button>
-        <span class="sp-live">Current SP: <b id="sp-flow-live">–</b> L/min</span>
-      </div>
-    </div>
-
-    <!-- CASCADE STATUS: read-only, computed by outer loop -->
-    <div class="sp-row">
-      <div class="sp-label">
-        <span class="sp-tag" style="background:#0f766e;">CASCADE</span>
-        <span class="sp-desc">Cascade control status (read-only)</span>
-      </div>
-      <div class="sp-inputs" style="flex-wrap:wrap; gap:14px;">
-        <span class="sp-unit">Mode:</span>
-        <b id="cascade-mode-live" style="font-size:13px;">–</b>
-        <span class="sp-unit" style="margin-left:12px;">FIC-101 calc. SP:</span>
-        <b id="cascade-flow-live" style="font-size:13px;">–</b>
-        <span class="sp-unit">L/min</span>
-        <span class="sp-unit" style="margin-left:12px;">TIC-101 SP:</span>
-        <b id="cascade-temp-live" style="font-size:13px;">–</b>
-        <span class="sp-unit">°C</span>
-      </div>
-    </div>
-
-    <!-- TIC-200: distillation heater -->
-    <div class="sp-row">
-      <div class="sp-label">
-        <span class="sp-tag">TIC-200</span>
-        <span class="sp-desc">Distillation heater (cutoff temp)</span>
-      </div>
-      <div class="sp-inputs">
-        <input type="number" id="sp-heater-temp" min="50" max="99" step="1" value="98" class="sp-input">
-        <span class="sp-unit">°C cutoff</span>
-        <button class="sp-btn" onclick="sendSP('sp_heater', document.getElementById('sp-heater-temp').value)">Set temp</button>
-        <button class="sp-btn sp-btn-on"  onclick="sendSP('heater','on')">Heater ON</button>
-        <button class="sp-btn sp-btn-off" onclick="sendSP('heater','off')">Heater OFF</button>
-        <span class="sp-live">
-          <b id="sp-heater-state-live">–</b> &nbsp;|&nbsp; Cutoff: <b id="sp-heater-temp-live">–</b> °C
-        </span>
-      </div>
-    </div>
-
-  </div><!-- /sp-grid -->
-</div><!-- /sp-card -->
-
-<style>
-  #sp-card { margin-top: 0; }
-  .sp-grid { display: flex; flex-direction: column; gap: 16px; }
-  .sp-row  { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
-             padding: 12px 0; border-bottom: 1px solid #f1f5f9; }
-  .sp-row:last-child { border-bottom: none; }
-  .sp-label { display: flex; flex-direction: column; gap: 4px; min-width: 200px; flex: 0 0 auto; }
-  .sp-tag   { background:#1e3a8a; color:#fff; font-weight:700; font-size:11px;
-              border-radius:8px; padding:3px 9px; display:inline-block; width:fit-content; }
-  .sp-desc  { font-size:12px; color:#475569; }
-  .sp-inputs { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .sp-input  { width:80px; padding:6px 8px; border:1.5px solid #cbd5e1;
-               border-radius:8px; font-size:14px; font-weight:600; color:#1e3a8a;
-               text-align:center; }
-  .sp-input:focus { outline:none; border-color:#1e3a8a; }
-  .sp-unit  { font-size:12px; color:#64748b; white-space:nowrap; }
-  .sp-btn   { border:none; border-radius:8px; padding:6px 14px; font-weight:700;
-              font-size:12px; cursor:pointer; background:#1e3a8a; color:#fff;
-              transition:background .2s; }
-  .sp-btn:hover { background:#2d4eaa; }
-  .sp-btn-on  { background:#16a34a; }
-  .sp-btn-on:hover  { background:#15803d; }
-  .sp-btn-off { background:#ef4444; }
-  .sp-btn-off:hover { background:#dc2626; }
-  .sp-live  { font-size:12px; color:#475569; margin-left:4px; }
-</style>
-
-<script>
-async function sendSP(param, value) {
-  try {
-    const resp = await fetch('/set-sp?' + param + '=' + encodeURIComponent(value));
-    const json = await resp.json();
-    if (!json.ok) console.warn('set-sp rejected:', json.error);
-  } catch(e) { console.warn('set-sp error', e); }
-}
-
-// sendSP — called by Set buttons in the panel above
-</script>
-  <h2>Pump &amp; Stirrer Control</h2>
-  <div id="pump-rows"></div>
-  <div style="margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0;">
-    <button onclick="stopAllPumps()" style="background:#ef4444;color:#fff;border:none;border-radius:10px;padding:9px 22px;font-weight:700;font-size:13px;cursor:pointer;transition:background 0.2s;" onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='#ef4444'">&#128721; STOP ALL PUMPS</button>
-  </div>
-</div>
-
-
-<script>
-/* ═══════════════════════════════════════════════════════════════
-   1.  Inject the SVG inline
-       On the ESP32, serve the SVG file at /pfd.svg
-       Here we fetch it and inject it.  In the Arduino firmware
-       you can also embed it as a PROGMEM string and serve it.
-   ═══════════════════════════════════════════════════════════════ */
-/* SVG is inline */
-
-
-/* ═══════════════════════════════════════════════════════════════
-   2.  Responsive scaling
-       The PFD is 1126×923 in SVG space.  We scale the whole
-       .pfd-scaler div to fit the card width.
-   ═══════════════════════════════════════════════════════════════ */
-const NATIVE_W = 1142;
-const NATIVE_H = 895;
-
-function scalePFD() {
-  const card      = document.querySelector('.pfd-card');
-  const container = document.getElementById('scalerContainer');
-  const scaler    = document.getElementById('pfdScaler');
-  const wrap      = document.getElementById('pfdWrap');
-
-  const availW = card.clientWidth - 40;
-  const scale  = Math.min(1, availW / NATIVE_W);
-
-  wrap.style.width   = NATIVE_W + 'px';
-  wrap.style.height  = NATIVE_H + 'px';
-  scaler.style.transformOrigin = 'top left';
-  scaler.style.transform       = `scale(${scale})`;
-  scaler.style.width           = NATIVE_W + 'px';
-  scaler.style.height          = NATIVE_H + 'px';
-
-  const scaledW  = NATIVE_W * scale;
-  const leftover = availW - scaledW;
-  scaler.style.marginLeft = Math.max(0, leftover / 2) + 'px';
-
-  container.style.height = (NATIVE_H * scale) + 'px';
-}
-
-window.addEventListener('resize', scalePFD);
-scalePFD();
-
-
-/* ═══════════════════════════════════════════════════════════════
-   3.  Live data fetch from /data  (same endpoint as dashboard)
-   ═══════════════════════════════════════════════════════════════ */
-function setPumpDot(id, running) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.className = 'overlay pump-dot ' + (running ? 'running' : 'off');
-}
-
-function setStatusDot(id, on) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.className = 'dot ' + (on ? 'dot-on' : 'dot-off');
-}
-
-async function fetchData() {
-  try {
-    const resp = await fetch('/data');
-    if (!resp.ok) return;
-    const d = await resp.json();
-    console.log('pump1:', d.pump1, typeof d.pump1, 'pump2:', d.pump2, 'recycle:', d.recyclePump);
-
-    const temps  = d.temps  || [0,0,0,0,0];
-    const weight = d.weight ?? 0;
-
-    /* ── Temperature badges ── */
-    document.getElementById('ti102').textContent  = d.ti102.toFixed(1) + ' °C'; // TI102  Cold In  (sensor1)
-    document.getElementById('ti103').textContent  = d.ti103.toFixed(1) + ' °C'; // TI103  Cold Out (sensor2)
-    document.getElementById('ti100').textContent  = d.ti100.toFixed(1) + ' °C'; // TI100  Hot In   (sensor3)
-    document.getElementById('tt101').textContent  = d.tt101.toFixed(1) + ' °C'; // TT101  Hot Out  (sensor4)
-    document.getElementById('tt200').textContent  = d.tt200.toFixed(1) + ' °C'; // TT200  Distillation (sensor5)
-
-    /* ── Weight badge on V-500 ── */
-    document.getElementById('v500-weight').textContent = weight + ' g';
-
-    /* ── Flow badges on FT instruments ── */
-    document.getElementById('ft100').textContent  = (d.ft100 !== undefined ? d.ft100.toFixed(2) + ' L/min' : '– L/min');  // FT100  OJ
-    document.getElementById('ft101').textContent  = (d.ft101 !== undefined ? d.ft101.toFixed(2) + ' L/min' : '– L/min');  // FT101  Chiller
-
-    /* ── Status bar ── */
-    document.getElementById('sb-weight').textContent = weight;
-    if (d.servoAngle !== undefined) {
-      document.getElementById('sb-servo').textContent = d.servoAngle.toFixed(1);
-    }
-    document.getElementById('sb-t0').textContent = d.ti102.toFixed(1);
-    document.getElementById('sb-t1').textContent = d.ti103.toFixed(1);
-    document.getElementById('sb-t2').textContent = d.ti100.toFixed(1);
-    document.getElementById('sb-t3').textContent = d.tt101.toFixed(1);
-    if (d.q_cold !== undefined) document.getElementById('sb-q-cold').textContent = d.q_cold.toFixed(1);
-    if (d.q_hot  !== undefined) document.getElementById('sb-q-hot').textContent  = d.q_hot.toFixed(1);
-
-    /* ── Pump dots ──
-       Map your ESP32 pump booleans to the PFD symbols.
-       Adjust the mapping below to match your hardware!     */
-    // Convert to real booleans
-    const p1  = d.pump1       === true || d.pump1       === 'true' || d.pump1       === 1;
-    const p2  = d.pump2       === true || d.pump2       === 'true' || d.pump2       === 1;
-    const p3  = d.recyclePump === true || d.recyclePump === 'true' || d.recyclePump === 1;
-    const p4  = d.pump4       === true || d.pump4       === 'true' || d.pump4       === 1;
-    const p5  = d.pump5       === true || d.pump5       === 'true' || d.pump5       === 1;
-    const p6  = d.pump6       === true || d.pump6       === 'true' || d.pump6       === 1;
-    const p7  = d.pump7       === true || d.pump7       === 'true' || d.pump7       === 1;
-    const str = d.pump8       === true || d.pump8       === 'true' || d.pump8       === 1;
-    const htr = d.heater      === true || d.heater      === 'true' || d.heater      === 1;
-
-    setPumpDot('pd-p102', p1);   // P-102 Juice pump to glass    (pwmChannelA)
-    setPumpDot('pd-p201', p2);   // P-201 Alcohol pump           (pwmChannelB)
-    setPumpDot('pd-p101', p3);   // P-101 OJ recycle pump        (pwmChannelC)
-    setPumpDot('pd-p100', p4);   // P-100 Centrifuge pump        (pwmChannelD)
-    setPumpDot('pd-p202', p5);   // P-202 Blue Curacao pump      (pwmChannelE)
-    setPumpDot('pd-p200', p6);   // P-200 Alcohol vessel to CSTR (pwmChannelF)
-    setPumpDot('pd-p300', p7);   // P-300 Grenadine pump         (pwmChannelG)
-    setPumpDot('pd-stirrer', str); // STIRRER R-200 agitator      (pwmChannelH pump8)
-
-    /* ── Status bar dots ── */
-    setStatusDot('dot-pump1',   p1);
-    setStatusDot('dot-pump2',   p2);
-    setStatusDot('dot-recycle', p3);
-    setStatusDot('dot-heater',  htr);
-    setStatusDot('dot-stirrer', str);
-
-    /* ── Heater badge on H-100 valve ── */
-    const hEl = document.getElementById('h100');
-    if (d.servoAngle !== undefined) {
-      hEl.textContent = d.servoAngle.toFixed(1) + '°';
-      // colour: green near open (96), orange mid, red near closed (180)
-      const pct = (d.servoAngle - 96) / (180 - 96); // 0=open, 1=closed
-      if (pct < 0.33)       hEl.style.background = '#16a34a';
-      else if (pct < 0.66)  hEl.style.background = '#f97316';
-      else                  hEl.style.background = '#dc2626';
+      Object.values(charts).forEach(c => c.update());
     }
 
-    // ── Setpoint panel live values ──────────────────────────────────────────
-    if (d.sp_tt101 !== undefined) {
-      document.getElementById('sp-tic101-live').textContent = d.sp_tt101.toFixed(1);
-      const inp = document.getElementById('sp-tic101');
-      if (inp.dataset.loaded !== '1') { inp.value = d.sp_tt101.toFixed(1); inp.dataset.loaded = '1'; }
+    function updateChart(chart, val) {
+      chart.data.labels = labels;
+      chart.data.datasets[0].data.push(val);
+      if (chart.data.datasets[0].data.length > MAX) chart.data.datasets[0].data.shift();
     }
-    if (d.sp_flow !== undefined) {
-      document.getElementById('sp-flow-live').textContent = d.sp_flow.toFixed(2);
-      const inp = document.getElementById('sp-flow');
-      if (inp.dataset.loaded !== '1') { inp.value = d.sp_flow.toFixed(2); inp.dataset.loaded = '1'; }
-    }
-    if (d.sp_heater !== undefined) {
-      document.getElementById('sp-heater-temp-live').textContent = d.sp_heater.toFixed(1);
-      const inp = document.getElementById('sp-heater-temp');
-      if (inp.dataset.loaded !== '1') { inp.value = d.sp_heater.toFixed(1); inp.dataset.loaded = '1'; }
-    }
-    if (d.heaterEnabled !== undefined) {
-      const el = document.getElementById('sp-heater-state-live');
-      el.textContent = d.heaterEnabled ? 'ON' : 'OFF';
-      el.style.color = d.heaterEnabled ? '#16a34a' : '#ef4444';
-    }
-    // ── Cascade status row ───────────────────────────────────────────────────
-    if (d.servoAuto !== undefined) {
-      const modeEl = document.getElementById('cascade-mode-live');
-      modeEl.textContent = d.servoAuto ? 'AUTO' : 'MANUAL';
-      modeEl.style.color = d.servoAuto ? '#16a34a' : '#f97316';
-    }
-    if (d.sp_flow_cascade !== undefined)
-      document.getElementById('cascade-flow-live').textContent = d.sp_flow_cascade.toFixed(2);
-    if (d.sp_tt101 !== undefined)
-      document.getElementById('cascade-temp-live').textContent = d.sp_tt101.toFixed(1);
 
-  } catch (err) {
-    console.warn('Fetch error:', err);
-  }
-}
-
-// Poll every second
-setInterval(fetchData, 1000);
-fetchData();
-
-// ── Pump control panel ───────────────────────────────────────────
-const PUMPS = [
-  { id:'p100', tag:'P-100', desc:'Centrifuge pump',           dataKey:'pump4'      },
-  { id:'p101', tag:'P-101', desc:'OJ Recycle pump',           dataKey:'recyclePump'},
-  { id:'p102', tag:'P-102', desc:'Juice \u2192 glass',        dataKey:'pump1'      },
-  { id:'p200', tag:'P-200', desc:'Alcohol vessel\u2192CSTR',  dataKey:'pump6'      },
-  { id:'p201', tag:'P-201', desc:'Alcohol pump',              dataKey:'pump2'      },
-  { id:'p202', tag:'P-202', desc:'Blue Curacao pump',         dataKey:'pump5'      },
-  { id:'p300', tag:'P-300', desc:'Grenadine pump',            dataKey:'pump7'      },
-  { id:'stirrer', tag:'STIRRER', desc:'CSTR Stirrer R-200',   dataKey:'stirrer'    },
-];
-
-const pumpRowContainer = document.getElementById('pump-rows');
-PUMPS.forEach(p => {
-  const row = document.createElement('div');
-  row.className = 'pump-row';
-  row.innerHTML = `
-    <span class="pump-status-dot off" id="pctrl-dot-${p.id}"></span>
-    <span class="pump-tag">${p.tag}</span>
-    <span class="pump-desc">${p.desc}</span>
-    <input type="range" min="0" max="255" value="0" class="pump-slider" id="pctrl-slider-${p.id}"
-      oninput="document.getElementById('pctrl-val-${p.id}').textContent=this.value">
-    <span class="pump-speed-val" id="pctrl-val-${p.id}">0</span>
-    <button class="pump-btn state-off" id="pctrl-btn-${p.id}" onclick="togglePump('${p.id}')">OFF</button>
-  `;
-  pumpRowContainer.appendChild(row);
-});
-
-const pumpOn = {};
-PUMPS.forEach(p => pumpOn[p.id] = false);
-
-async function sendPumpCmd(id, speed) {
-  try { await fetch('/pump-ctrl?pump=' + id + '&speed=' + speed); }
-  catch(e) { console.warn('pump-ctrl error', e); }
-}
-
-function togglePump(id) {
-  const slider = document.getElementById('pctrl-slider-' + id);
-  const btn    = document.getElementById('pctrl-btn-' + id);
-  if (pumpOn[id]) {
-    pumpOn[id] = false;
-    sendPumpCmd(id, 0);
-    btn.textContent = 'OFF'; btn.className = 'pump-btn state-off';
-  } else {
-    const spd = parseInt(slider.value) || 150;
-    slider.value = spd;
-    document.getElementById('pctrl-val-' + id).textContent = spd;
-    pumpOn[id] = true;
-    sendPumpCmd(id, spd);
-    btn.textContent = 'ON'; btn.className = 'pump-btn state-on';
-  }
-}
-
-PUMPS.forEach(p => {
-  document.getElementById('pctrl-slider-' + p.id).addEventListener('change', () => {
-    if (pumpOn[p.id]) sendPumpCmd(p.id, parseInt(document.getElementById('pctrl-slider-' + p.id).value));
-  });
-});
-
-function stopAllPumps() {
-  PUMPS.forEach(p => {
-    pumpOn[p.id] = false;
-    const btn = document.getElementById('pctrl-btn-' + p.id);
-    btn.textContent = 'OFF'; btn.className = 'pump-btn state-off';
-    sendPumpCmd(p.id, 0);
-  });
-}
-
-function updatePumpCtrlDots(d) {
-  PUMPS.forEach(p => {
-    const running = d[p.dataKey] === true || d[p.dataKey] === 'true' || d[p.dataKey] === 1;
-    const dot = document.getElementById('pctrl-dot-' + p.id);
-    if (dot) dot.className = 'pump-status-dot ' + (running ? 'running' : 'off');
-    const btn = document.getElementById('pctrl-btn-' + p.id);
-    if (btn) {
-      if (running && !pumpOn[p.id])  { btn.textContent='ON';  btn.className='pump-btn state-on';  pumpOn[p.id]=true;  }
-      else if (!running && pumpOn[p.id]) { btn.textContent='OFF'; btn.className='pump-btn state-off'; pumpOn[p.id]=false; }
-    }
-  });
-}
-</script>
-</body>
-</html>
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  /charts?sensor=hex | tt200 | weight | flow
-//  All history lives in the BROWSER — zero extra RAM on the ESP32.
-// ─────────────────────────────────────────────────────────────────────────────
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Live Charts</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;
-         background:linear-gradient(145deg,#e6f0ff,#fff);
-         padding:20px; color:#2c3e50; }
-  h1   { text-align:center; color:#1e3a8a; font-size:26px; font-weight:700; margin-bottom:6px; }
-  .sub { text-align:center; color:#64748b; font-size:13px; margin-bottom:20px; }
-  .card { background:#fff; border-radius:20px;
-          box-shadow:0 8px 20px rgba(0,0,0,0.08); padding:25px; margin-bottom:25px; }
-  .card h2 { color:#1e3a8a; margin-bottom:15px; }
-  canvas { width:100%!important; height:320px!important; }
-  nav { text-align:center; margin-bottom:20px; display:flex;
-        flex-wrap:wrap; gap:10px; justify-content:center; }
-  nav a { background:#1e3a8a; color:#fff; border-radius:10px;
-          padding:8px 18px; font-weight:700; font-size:13px;
-          text-decoration:none; transition:background .2s; }
-  nav a:hover  { background:#2d4eaa; }
-  nav a.active { background:#0891b2; }
-</style>
-</head>
-<body>
-
-<h1>Live Charts</h1>
-<p class="sub">Last 3 minutes &middot; 1 sample/s &middot; history stored in browser only</p>
-
-<nav>
-  <a href="/charts?sensor=hex"    id="nav-hex">HEX Temperatures</a>
-  <a href="/charts?sensor=tt200"  id="nav-tt200">TT-200 Distillation</a>
-  <a href="/charts?sensor=weight" id="nav-weight">Weight V-500</a>
-  <a href="/charts?sensor=flow"   id="nav-flow">Flow Rates</a>
-  <a href="/pfd">&larr; Back to PFD</a>
-</nav>
-
-<div class="card" id="card-hex"    style="display:none"><h2>Heat Exchanger Temperatures</h2><canvas id="hexChart"></canvas></div>
-<div class="card" id="card-tt200"  style="display:none"><h2>TT-200 Distillation Temperature</h2><canvas id="tt200Chart"></canvas></div>
-<div class="card" id="card-weight" style="display:none"><h2>V-500 Cocktail Glass Weight</h2><canvas id="weightChart"></canvas></div>
-<div class="card" id="card-flow"   style="display:none"><h2>Flow Rates</h2><canvas id="flowChart"></canvas></div>
-
-<script>
-const sensor = new URLSearchParams(window.location.search).get('sensor') || 'hex';
-document.getElementById('card-' + sensor).style.display = 'block';
-const navEl = document.getElementById('nav-' + sensor);
-if (navEl) navEl.classList.add('active');
-
-const MAX = 300; // 5 min @ 1 s/sample
-const labels = [];
-
-const base = {
-  responsive:true, maintainAspectRatio:false, animation:false,
-  plugins:{ legend:{ display:true, position:'top' } },
-  scales:{ x:{ ticks:{ maxTicksLimit:6 } } }   /* ~1 label per minute */
-};
-
-let hexC, ttC, wC, fC;
-
-if (sensor==='hex') {
-  hexC = new Chart(document.getElementById('hexChart'),{
-    type:'line', data:{ labels, datasets:[
-      { label:'Cold In (TI-102)',  data:[], borderColor:'#3b82f6', borderWidth:2, tension:0.3, pointRadius:0 },
-      { label:'Cold Out (TI-103)', data:[], borderColor:'#60a5fa', borderWidth:2, tension:0.3, pointRadius:0 },
-      { label:'Hot In (TI-100)',   data:[], borderColor:'#ef4444', borderWidth:2, tension:0.3, pointRadius:0 },
-      { label:'Hot Out (TT-101)',  data:[], borderColor:'#f97316', borderWidth:2, tension:0.3, pointRadius:0 },
-    ]},
-    options:{ ...base, scales:{ ...base.scales, y:{ title:{ display:true, text:'°C' }, suggestedMin:0, suggestedMax:30 } } }
-  });
-}
-if (sensor==='tt200') {
-  ttC = new Chart(document.getElementById('tt200Chart'),{
-    type:'line', data:{ labels, datasets:[
-      { label:'TT-200 Distillation', data:[], borderColor:'#dc2626', backgroundColor:'rgba(220,38,38,0.08)', fill:true, borderWidth:2, tension:0.3, pointRadius:0 },
-    ]},
-    options:{ ...base, scales:{ ...base.scales, y:{ title:{ display:true, text:'°C' }, suggestedMin:0, suggestedMax:100 } } }
-  });
-}
-if (sensor==='weight') {
-  wC = new Chart(document.getElementById('weightChart'),{
-    type:'line', data:{ labels, datasets:[
-      { label:'Weight (g)', data:[], borderColor:'#7c3aed', backgroundColor:'rgba(124,58,237,0.08)', fill:true, borderWidth:2, tension:0.3, pointRadius:0 },
-    ]},
-    options:{ ...base, scales:{ ...base.scales, y:{ title:{ display:true, text:'g' }, suggestedMin:0, suggestedMax:350 } } }
-  });
-}
-if (sensor==='flow') {
-  fC = new Chart(document.getElementById('flowChart'),{
-    type:'line', data:{ labels, datasets:[
-      { label:'FT-100 OJ (L/min)',      data:[], borderColor:'#0891b2', borderWidth:2, tension:0.3, pointRadius:0 },
-      { label:'FT-101 Chiller (L/min)', data:[], borderColor:'#22c55e', borderWidth:2, tension:0.3, pointRadius:0 },
-    ]},
-    options:{ ...base, scales:{ ...base.scales, y:{ title:{ display:true, text:'L/min' }, suggestedMin:0 } } }
-  });
-}
-
-function push(chart, ...vals) {
-  vals.forEach((v,i) => {
-    chart.data.datasets[i].data.push(v);
-    if (chart.data.datasets[i].data.length > MAX) chart.data.datasets[i].data.shift();
-  });
-}
-
-async function fetchData() {
-  try {
-    const d = await fetch('/data').then(r=>r.json());
-    const t = new Date().toLocaleTimeString();
-    labels.push(t);
-    if (labels.length > MAX) labels.shift();
-
-    if (sensor==='hex'    && hexC) { push(hexC, d.ti102??0, d.ti103??0, d.ti100??0, d.tt101??0); hexC.update(); }
-    if (sensor==='tt200'  && ttC)  { push(ttC, d.tt200??0);  ttC.update(); }
-    if (sensor==='weight' && wC)   { push(wC, d.weight??0);  wC.update(); }
-    if (sensor==='flow'   && fC)   { push(fC, d.ft100??0, d.ft101??0); fC.update(); }
-  } catch(e) { console.warn('fetch error',e); }
-}
-
-setInterval(fetchData, 1000);
-fetchData();
-</script>
+    window.onload = () => {
+      initCharts();
+      setInterval(update, 1000);
+    };
+  </script>
 </body>
 </html>
