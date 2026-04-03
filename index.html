@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ESP32 Cocktail Dashboard — Demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background: linear-gradient(145deg, #e6f0ff, #ffffff); margin:0; padding:20px; color:#2c3e50;}
+  h1 {text-align:center;color:#1e3a8a;font-size:36px;font-weight:700;margin-bottom:30px;letter-spacing:1px;}
+  .grid {display:grid;grid-template-columns:repeat(2,1fr);gap:25px;max-width:1200px;margin:auto;}
+  .card {background:#fff;padding:25px;border-radius:20px;box-shadow:0 8px 20px rgba(0,0,0,0.08);transition: transform 0.2s, box-shadow 0.2s;}
+  .card:hover {transform: translateY(-5px);box-shadow:0 12px 25px rgba(0,0,0,0.12);}
+  .card h2 {margin-top:0;font-size:24px;color:#1e3a8a;margin-bottom:15px;font-weight:700;}
+  canvas {width:100% !important;height:280px !important;margin-top:10px;}
+  .current-value {font-size:22px;font-weight:600;margin-bottom:15px;}
+  .pump-card {max-width:1200px;margin:30px auto 0 auto;}
+  .status {font-weight:700;font-size:20px;}
+  .status.running { color: #16a34a; }
+  .status.off { color: #ef4444; }
+  .tq-full {grid-column: 1 / -1;}
+  .tq-info {display:flex;gap:32px;flex-wrap:wrap;margin-top:12px;padding:10px 14px;background:#f3f6fb;border-radius:12px;font-size:16px;font-weight:600;}
+  .tq-info span {color:#2c3e50;}
+  .tq-info .pinch {color:#dc2626;}
+  .topnav{display:flex;flex-wrap:wrap;gap:8px;background:#1e3a8a;padding:10px 16px;border-radius:14px;margin:0 auto 22px auto;max-width:1200px;align-items:center;}
+  .topnav a{color:rgba(255,255,255,0.75);text-decoration:none;font-weight:600;font-size:14px;padding:6px 14px;border-radius:8px;transition:background .2s,color .2s;}
+  .topnav a:hover{background:rgba(255,255,255,0.18);color:#fff;}
+  .topnav a.active{background:#fff;color:#1e3a8a;}
+  .topnav .nav-disabled{color:rgba(255,255,255,0.35);cursor:default;font-size:14px;font-weight:600;padding:6px 14px;}
+
+  /* Demo banner */
+  .demo-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 1200px;
+    margin: 0 auto 20px auto;
+    background: linear-gradient(90deg, #fef3c7, #fde68a);
+    border: 1.5px solid #f59e0b;
+    border-radius: 14px;
+    padding: 11px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #78350f;
+  }
+  .demo-badge {
+    background: #f59e0b;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    border-radius: 6px;
+    padding: 3px 9px;
+    white-space: nowrap;
+  }
+  .sim-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #16a34a;
+    margin-right: 5px;
+    animation: pulse 1.4s infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity:1; }
+    50%      { opacity:0.3; }
+  }
+
+  @media (max-width:600px){.grid{grid-template-columns:1fr;}}
+</style>
+</head>
+
+<body>
+
+<!-- ── Demo banner ──────────────────────────────────────────────────────── -->
+<div class="demo-banner">
+  <span class="demo-badge">DEMO</span>
+  <span><span class="sim-dot"></span>No ESP32 connected &mdash; all sensor values are simulated in real-time. Charts pre-load 5 minutes of synthetic history on page open.</span>
+</div>
+
+<!-- ── Navigation ───────────────────────────────────────────────────────── -->
+<nav class="topnav">
+  <a href="#" class="active">&#128202; Dashboard</a>
+  <span class="nav-disabled">&#128295; PFD</span>
+  <span class="nav-disabled">&#128200; Charts</span>
+  <span class="nav-disabled">&#127777; Sensors</span>
+</nav>
+
+<h1>ESP32 Cocktail Dashboard</h1>
+
+<!-- ── Cards grid ───────────────────────────────────────────────────────── -->
+<div class="grid">
+
+  <div class="card">
+    <h2>Weight Monitoring</h2>
+    <div class="current-value">Current Weight: <span id="weightValue">0</span> g</div>
+    <canvas id="weightChart"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>HEX Performance</h2>
+    <div class="current-value" style="display:flex;gap:24px;flex-wrap:wrap;">
+      <span>LMTD: <b id="lmtdValue">&ndash;</b> &deg;C</span>
+      <span>U: <b id="uValue">&ndash;</b> W/(m&sup2;&middot;K)</span>
+    </div>
+    <canvas id="hexChart"></canvas>
+  </div>
+
+  <div class="card tq-full">
+    <h2>Thermodynamic T-Q Profile</h2>
+    <canvas id="tqChart"></canvas>
+    <div class="tq-info">
+      <span>Q<sub>total</sub>: <b id="tqQvalue">&mdash;</b> W</span>
+      <span>&Delta;T<sub>left</sub>: <b id="tqDtLeft">&mdash;</b> &deg;C</span>
+      <span>&Delta;T<sub>right</sub>: <b id="tqDtRight">&mdash;</b> &deg;C</span>
+      <span class="pinch">&Delta;T<sub>min</sub> (Pinch): <b id="tqDtMin">&mdash;</b> &deg;C</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── System status ────────────────────────────────────────────────────── -->
+<div class="card pump-card">
+  <h2>System Status</h2>
+  <p>Juice Pump (P-102): <span id="pump1Status" class="status running">RUNNING</span></p>
+  <p>Alcohol Pump (P-201): <span id="pump2Status" class="status off">OFF</span></p>
+  <p>Recycle Pump (P-101): <span id="recycleStatus" class="status running">RUNNING</span></p>
+  <p>Heater: <span id="heaterStatus" class="status running">ON</span></p>
+  <p>Juice Pump Speed: <span id="juicePWM">78</span>%</p>
+</div>
+
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+//  SIMULATION ENGINE
+//  Replaces the ESP32 /data and /history endpoints entirely.
+//  Uses a mean-reverting random walk for each sensor so values look natural.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Physical constants (match the ESP32 firmware exactly) ─────────────────
+const CP_CHILLER = 3770;   // J/(kg·K) hot-side (chiller water)
+const CP_OJ      = 4186;   // J/(kg·K) cold-side (orange juice)
+const RHO        = 1000;   // g/L  (for the /60000 formula used in firmware)
+const HEX_AREA   = 0.12;   // m²
+
+// ── Simulation state ───────────────────────────────────────────────────────
+// All temperatures in °C, flows in L/min.
+// Naming mirrors the /data JSON keys from the real firmware.
+const sim = {
+  // Temperatures
+  ti100: 20.2,   // TI-100 : hot-side HEX inlet  (OJ entering HEX, ~room temp)
+  tt101:  8.7,   // TT-101 : hot-side HEX outlet  (OJ cooled, cascade setpoint ~9 °C)
+  ti102:  3.4,   // TI-102 : cold-side HEX inlet  (chiller water in)
+  ti103: 12.1,   // TI-103 : cold-side HEX outlet (chiller water warmed up)
+  tt200: 88.3,   // TT-200 : distillation column  (approaching 95 °C cutoff)
+
+  // Flow rates
+  ft101:  0.63,  // FT-101 : chiller cooling water [L/min]  — servo controlled
+  ft100:  0.94,  // FT-100 : orange juice recycle  [L/min]
+  ft101_total: 12.4,
+  ft100_total: 19.2,
+
+  // Derived (recomputed each tick)
+  lmtd: 0,
+  u_overall: 0,
+
+  // Weight / cocktail-fill cycle
+  weight: 0,
+  _wPhase: 0,    // 0=filling  1=pause-full  2=emptying
+  _wTimer: 0,
+
+  // Cascade setpoint (mirrors firmware outer-loop output)
+  sp_tt101: 9.0,
+  sp_flow_cascade: 0.63,
+  servoAngle: 142,
+
+  // Pump states
+  pump1:      true,    // P-102 juice pump
+  pump2:      false,   // P-201 alcohol pump
+  recyclePump:true,    // P-101 recycle
+  heater:     true,    // distillation heater
+  juicePWM:   78,
+};
+
+// ── Helper ─────────────────────────────────────────────────────────────────
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function noise(sigma)      { return (Math.random() - 0.5) * 2 * sigma; }
+
+// ── Derived values (LMTD + U) — identical to ESP32 firmware formula ───────
+function calcDerived(s) {
+  const dT1 = s.ti100 - s.ti103;  // hot-in  minus cold-out
+  const dT2 = s.tt101 - s.ti102;  // hot-out minus cold-in
+  if (dT1 > 0.01 && dT2 > 0.01) {
+    s.lmtd = Math.abs(dT1 - dT2) < 0.01
+      ? dT1
+      : (dT1 - dT2) / Math.log(dT1 / dT2);
+    // Firmware uses: ft/60000 * rho(1000) * cp * dT  ≡  ft/60 * cp * dT  (SI)
+    const qHot  = s.ft101 / 60000 * RHO * CP_CHILLER * Math.abs(s.ti100 - s.tt101);
+    const qCold = s.ft100 / 60000 * RHO * CP_OJ      * Math.abs(s.ti103 - s.ti102);
+    const qAvg  = (qHot + qCold) / 2;
+    s.u_overall = s.lmtd > 0.1 ? qAvg / (HEX_AREA * s.lmtd) : 0;
+  } else {
+    s.lmtd = 0;
+    s.u_overall = 0;
+  }
+}
+
+// ── Advance simulation by one second ──────────────────────────────────────
+function stepSim(s) {
+
+  // Temperatures: mean-reverting random walk
+  s.ti100 = clamp(s.ti100 + (20.0 - s.ti100) * 0.025 + noise(0.08), 17.0, 23.0);
+  s.tt101 = clamp(s.tt101 + ( 8.5 - s.tt101) * 0.06  + noise(0.07),  5.5, 12.0);
+  s.ti102 = clamp(s.ti102 + ( 3.5 - s.ti102) * 0.03  + noise(0.06),  1.0,  6.0);
+  s.ti103 = clamp(s.ti103 + (12.0 - s.ti103) * 0.03  + noise(0.09),  8.0, 16.0);
+  s.tt200 = clamp(s.tt200 + (89.0 - s.tt200) * 0.008 + noise(0.18), 80.0, 96.0);
+
+  // Flow rates: small jitter around nominal
+  s.ft101 = clamp(s.ft101 + (0.63 - s.ft101) * 0.05 + noise(0.015), 0.35, 0.88);
+  s.ft100 = clamp(s.ft100 + (0.94 - s.ft100) * 0.03 + noise(0.020), 0.55, 1.20);
+  s.ft101_total += s.ft101 / 60;
+  s.ft100_total += s.ft100 / 60;
+
+  // Cascade flow setpoint (outer PI output)
+  const errT = s.tt101 - s.sp_tt101;
+  s.sp_flow_cascade = clamp(0.63 + errT * 0.18, 0.0, 0.88);
+
+  // ── Weight / cocktail-fill cycle ────────────────────────────────────────
+  //  Phase 0 (filling) : ~0 → 295 g at ~4.5 g/s  (~65 s)
+  //  Phase 1 (pause)   : sit at ~295 g for 6 s (glass being removed)
+  //  Phase 2 (empty)   : quickly drop to 0 (operator takes glass)
+  s._wTimer++;
+  if (s._wPhase === 0) {
+    s.weight += 4.5 + noise(0.8);
+    if (s.weight >= 295) { s.weight = 295; s._wPhase = 1; s._wTimer = 0; }
+    // P-102 juice pump on; P-201 alcohol on when weight 180–250 g
+    s.pump1 = true;
+    s.pump2 = (s.weight >= 180 && s.weight <= 250);
+  } else if (s._wPhase === 1) {
+    s.weight += noise(0.3);  // slight scale drift at rest
+    s.pump1 = false;
+    s.pump2 = false;
+    if (s._wTimer >= 6) { s._wPhase = 2; s._wTimer = 0; }
+  } else {
+    // Fast empty
+    s.weight = clamp(s.weight - 35, 0, 320);
+    s.pump1 = false;
+    s.pump2 = false;
+    if (s.weight <= 1) { s.weight = 0; s._wPhase = 0; s._wTimer = 0; }
+  }
+  s.weight = clamp(s.weight, 0, 320);
+
+  calcDerived(s);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CHART SETUP  (identical configuration to the real firmware webpage.h)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const weightCtx = document.getElementById('weightChart').getContext('2d');
+const hexCtx    = document.getElementById('hexChart').getContext('2d');
+const tqCtx     = document.getElementById('tqChart').getContext('2d');
+
+const weightChart = new Chart(weightCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [{
+    label: 'Weight (g)', data: [],
+    borderColor: '#1e3a8a', backgroundColor: 'rgba(30,58,138,0.1)',
+    borderWidth: 2, fill: true, tension: 0.3
+  }]},
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    scales: {
+      x: { ticks: { maxTicksLimit: 6 } },
+      y: { title: { display: true, text: 'Grams' }, suggestedMin: 0, suggestedMax: 350 }
+    }
+  }
+});
+
+const hexChart = new Chart(hexCtx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'LMTD (°C)',   data: [], borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,0.08)',  borderWidth: 2, tension: 0.3, yAxisID: 'yL' },
+      { label: 'U (W/m²·K)', data: [], borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.08)', borderWidth: 2, tension: 0.3, yAxisID: 'yU' }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: true, position: 'top', align: 'end', labels: { usePointStyle: true, padding: 10, boxWidth: 12 } } },
+    scales: {
+      x:  { ticks: { maxTicksLimit: 6 } },
+      yL: { type: 'linear', position: 'left',  title: { display: true, text: 'LMTD (°C)' },    suggestedMin: 0, suggestedMax: 20 },
+      yU: { type: 'linear', position: 'right', title: { display: true, text: 'U (W/m²·K)' }, suggestedMin: 0, suggestedMax: 2000, grid: { drawOnChartArea: false } }
+    }
+  }
+});
+
+const tqChart = new Chart(tqCtx, {
+  type: 'scatter',
+  data: {
+    datasets: [
+      {
+        label: 'Hot Stream (chiller water)',
+        data: [], borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)',
+        borderWidth: 2.5, showLine: true, pointRadius: 5, pointHoverRadius: 7, tension: 0, fill: false
+      },
+      {
+        label: 'Cold Stream (orange juice)',
+        data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.15)',
+        borderWidth: 2.5, showLine: true, pointRadius: 5, pointHoverRadius: 7, tension: 0, fill: false
+      }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: {
+      legend: { display: true, position: 'top', align: 'end', labels: { usePointStyle: true, padding: 12, boxWidth: 12 } },
+      tooltip: {
+        callbacks: {
+          label: ctx => ' Q=' + ctx.parsed.x.toFixed(0) + ' W   T=' + ctx.parsed.y.toFixed(2) + ' °C'
+        }
+      }
+    },
+    scales: {
+      x: { type: 'linear', title: { display: true, text: 'Cumulative Heat Duty (W)', font: { size: 13 } }, suggestedMin: 0, ticks: { maxTicksLimit: 6 } },
+      y: { type: 'linear', title: { display: true, text: 'Temperature (°C)', font: { size: 13 } } }
+    }
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PRE-POPULATE 5 MINUTES OF HISTORY
+//  Run the simulation forward 300 steps from a slightly varied start
+//  so the charts are full on page load — exactly like the /history endpoint.
+// ═══════════════════════════════════════════════════════════════════════════
+(function seedHistory() {
+  // Start from a slightly cooler, earlier operating point
+  const h = {
+    ti100: 19.8, tt101: 9.3, ti102: 3.7, ti103: 11.4, tt200: 86.9,
+    ft101: 0.59, ft100: 0.91, ft101_total: 0, ft100_total: 0,
+    weight: 0, _wPhase: 0, _wTimer: 0,
+    sp_tt101: 9.0, sp_flow_cascade: 0.59, servoAngle: 144,
+    pump1: true, pump2: false, recyclePump: true, heater: true, juicePWM: 78,
+    lmtd: 0, u_overall: 0,
+  };
+
+  const N = 300;
+  const wArr = [], lmtdArr = [], uArr = [];
+  const ti100Arr = [], tt101Arr = [], ti102Arr = [], ti103Arr = [];
+  const ft101Arr = [], ft100Arr = [];
+
+  for (let i = 0; i < N; i++) {
+    stepSim(h);
+    wArr.push(+h.weight.toFixed(1));
+    lmtdArr.push(+h.lmtd.toFixed(2));
+    uArr.push(+h.u_overall.toFixed(0));
+    ti100Arr.push(h.ti100); tt101Arr.push(h.tt101);
+    ti102Arr.push(h.ti102); ti103Arr.push(h.ti103);
+    ft101Arr.push(h.ft101); ft100Arr.push(h.ft100);
+  }
+
+  // Labels: "-4:59" … "0:00"  (oldest → newest, left → right)
+  const labels = Array.from({ length: N }, (_, i) => {
+    const s = N - 1 - i;
+    return '-' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  });
+
+  // Weight chart
+  weightChart.data.labels              = labels;
+  weightChart.data.datasets[0].data    = wArr;
+  weightChart.update();
+
+  // HEX performance chart
+  hexChart.data.labels                 = labels;
+  hexChart.data.datasets[0].data       = lmtdArr;
+  hexChart.data.datasets[1].data       = uArr;
+  hexChart.update();
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  LIVE TICK  (replaces fetchData / setInterval from the ESP32 version)
+//  Runs every 1 s — steps simulation then updates all charts & status fields.
+// ═══════════════════════════════════════════════════════════════════════════
+function tick() {
+  stepSim(sim);
+  const t = new Date().toLocaleTimeString();
+
+  // ── Weight chart ──────────────────────────────────────────────────────
+  weightChart.data.labels.push(t);
+  weightChart.data.datasets[0].data.push(+sim.weight.toFixed(1));
+  if (weightChart.data.labels.length > 300) {
+    weightChart.data.labels.shift();
+    weightChart.data.datasets[0].data.shift();
+  }
+  weightChart.update();
+  document.getElementById('weightValue').innerText = sim.weight.toFixed(1);
+
+  // ── HEX performance chart ─────────────────────────────────────────────
+  hexChart.data.labels.push(t);
+  hexChart.data.datasets[0].data.push(+sim.lmtd.toFixed(2));
+  hexChart.data.datasets[1].data.push(+sim.u_overall.toFixed(0));
+  if (hexChart.data.labels.length > 300) {
+    hexChart.data.labels.shift();
+    hexChart.data.datasets[0].data.shift();
+    hexChart.data.datasets[1].data.shift();
+  }
+  hexChart.update();
+  document.getElementById('lmtdValue').innerText = sim.lmtd.toFixed(2);
+  document.getElementById('uValue').innerText    = sim.u_overall.toFixed(0);
+
+  // ── T-Q Thermodynamic Diagram ─────────────────────────────────────────
+  // Mapping mirrors the real firmware: ti100/tt101 = hot side, ti102/ti103 = cold side
+  (function() {
+    const thIn  = sim.ti100;
+    const thOut = sim.tt101;
+    const tcIn  = sim.ti102;
+    const tcOut = sim.ti103;
+    const fHot  = sim.ft101;
+    if (fHot > 0) {
+      const qTotal = (fHot / 60) * 1.0 * 4180 * Math.abs(thIn - thOut);
+      tqChart.data.datasets[0].data = [{ x: 0, y: thIn  }, { x: qTotal, y: thOut }];
+      tqChart.data.datasets[1].data = [{ x: 0, y: tcOut }, { x: qTotal, y: tcIn  }];
+      tqChart.update();
+      const dtLeft  = Math.abs(thIn  - tcOut);
+      const dtRight = Math.abs(thOut - tcIn);
+      const dtMin   = Math.min(dtLeft, dtRight);
+      document.getElementById('tqQvalue').innerText  = qTotal.toFixed(0);
+      document.getElementById('tqDtLeft').innerText  = dtLeft.toFixed(2);
+      document.getElementById('tqDtRight').innerText = dtRight.toFixed(2);
+      document.getElementById('tqDtMin').innerText   = dtMin.toFixed(2);
+    }
+  })();
+
+  // ── Pump / system status ──────────────────────────────────────────────
+  function setStatus(id, on, onLabel, offLabel) {
+    const el = document.getElementById(id);
+    el.innerText  = on ? onLabel : offLabel;
+    el.className  = 'status ' + (on ? 'running' : 'off');
+  }
+  setStatus('pump1Status',   sim.pump1,       'RUNNING', 'OFF');
+  setStatus('pump2Status',   sim.pump2,       'RUNNING', 'OFF');
+  setStatus('recycleStatus', sim.recyclePump, 'RUNNING', 'OFF');
+  setStatus('heaterStatus',  sim.heater,      'ON',      'OFF');
+  document.getElementById('juicePWM').innerText = sim.juicePWM;
+}
+
+// Kick off — first tick immediately so values appear right away
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
